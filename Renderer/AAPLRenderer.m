@@ -142,6 +142,7 @@ typedef struct ThinGBuffer
             {
                 if( [_device supportsFamily:MTLGPUFamilyMetal3] )
                 {
+                    // metal3的argumentBuffer，aka gpuscene
                     createdArgumentBuffers = YES;
                     [self buildSceneArgumentBufferMetal3];
                 }
@@ -155,6 +156,7 @@ typedef struct ThinGBuffer
 
         // Call this last to ensure everything else builds.
         [self resizeRTReflectionMapTo:view.drawableSize];
+        // ray-trace加速结构
         [self buildRTAccelerationStructures];
         _cameraPanSpeedFactor = 0.5f;
         _metallicBias = 0.0f;
@@ -478,6 +480,10 @@ typedef struct ThinGBuffer
     return argumentDescriptor;
 }
 
+/// Bindless核心，将场景压入一个Argument Buffer，这样在raytrace的cs中，可以访问整个场景
+/// 原始demo是用raytrace的返回来做反射的完整光照返回
+/// 改进一下，可以多trace几根光线，来做GI等更高级的效果
+/// 此为METAL3前的build函数
 /// Build an argument buffer with all the  resources for the scene.   The ray-tracing shaders access meshes, submeshes, and materials
 /// through this argument buffer to apply the correct lighting to the calculated reflections.
 - (void)buildSceneArgumentBufferFromReflectionFunction:(nonnull id<MTLFunction>)function
@@ -638,6 +644,8 @@ typedef struct ThinGBuffer
     return buffer;
 }
 
+/// METAL3的build函数
+///
 /// Build an argument buffer with all resources for the scene.   The ray-tracing shaders access meshes, submeshes,
 /// and materials through this argument buffer to apply the correct lighting to the calculated reflections.
 - (void)buildSceneArgumentBufferMetal3 NS_AVAILABLE(13, 16)
@@ -1143,7 +1151,7 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
 
         if ( _renderMode == RMMetalRaytracing || _renderMode == RMReflectionsOnly )
         {
-
+            /// Step1. 全局Thin GBuffer，给CS使用
             MTLRenderPassDescriptor* gbufferPass = [MTLRenderPassDescriptor new];
             gbufferPass.colorAttachments[0].loadAction = MTLLoadActionClear;
             gbufferPass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
@@ -1159,7 +1167,7 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
             gbufferPass.depthAttachment.storeAction = MTLStoreActionStore;
 
             // Create a render command encoder.
-            [commandBuffer pushDebugGroup:@"Render Thin G-Buffer"];
+            [commandBuffer pushDebugGroup:@"全局GBuffer"];
             id<MTLRenderCommandEncoder> renderEncoder = [commandBuffer renderCommandEncoderWithDescriptor:gbufferPass];
 
             renderEncoder.label = @"ThinGBufferRenderEncoder";
@@ -1177,8 +1185,15 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
             [renderEncoder endEncoding];
             [commandBuffer popDebugGroup];
 
+            
+            
+            
+            /// Step2. CS阶段，使用Thin GBuffer作为源头，利用CS进行全局的光照计算（间接光照）
+            /// DEMO内是计算精确反射，我们还可以用它来作GI等
+            /// 比如，我们可以trace多个位置，然后accumulate一个真正的反弹出来
+            
             // The ray-traced reflections.
-            [commandBuffer pushDebugGroup:@"Raytrace Compute"];
+            [commandBuffer pushDebugGroup:@"CS处理"];
             [commandBuffer encodeWaitForEvent:_accelerationStructureBuildEvent value:kInstanceAccelerationStructureBuild];
             id<MTLComputeCommandEncoder> compEnc = [commandBuffer computeCommandEncoder];
             compEnc.label = @"RaytracedReflectionsComputeEncoder";
@@ -1242,7 +1257,7 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
             // that the GPU samples when reading the reflection in the accumulation pass.
 
             [commandBuffer pushDebugGroup:@"Generate Reflection Mipmaps"];
-            const BOOL gaussianBlur = YES;
+            const BOOL gaussianBlur = NO;
             if ( gaussianBlur )
             {
                 [self generateGaussMipmapsForTexture:_rtReflectionMap commandBuffer:commandBuffer];
@@ -1256,9 +1271,11 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
             [commandBuffer popDebugGroup];
         }
 
+        /// Step3. 常规的渲染pass
+        /// 如果是传统渲染，这是第一步，就是简单的前向渲染
+        /// 不过如果已经有了ThinGBuffer，这里其实可以直接再开一个CS，来作真正的DeferredShading
         
         // Encode the forward pass.
-
         MTLRenderPassDescriptor* rpd = view.currentRenderPassDescriptor;
         id<MTLTexture> drawableTexture = rpd.colorAttachments[0].texture;
         rpd.colorAttachments[0].texture = _rawColorMap;
@@ -1287,73 +1304,84 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
         [renderEncoder setFragmentTexture:_skyMap atIndex:AAPLSkyDomeTexture];
 
         [self encodeSceneRendering:renderEncoder];
-
+        
+        
+        
+        /// Step4. 传统的背景渲染
         // Encode the skybox rendering.
-
-        [renderEncoder setCullMode:MTLCullModeBack];
-        [renderEncoder setRenderPipelineState:_skyboxPipelineState];
-        
-        [renderEncoder setVertexBuffer:_cameraDataBuffers[_cameraBufferIndex]
-                                offset:0
-                               atIndex:BufferIndexCameraData];
-        
-        [renderEncoder setFragmentTexture:_skyMap atIndex:0];
-        
-        MTKMesh* metalKitMesh = _skybox.metalKitMesh;
-        for (NSUInteger bufferIndex = 0; bufferIndex < metalKitMesh.vertexBuffers.count; bufferIndex++)
+        if(false)
         {
-            MTKMeshBuffer *vertexBuffer = metalKitMesh.vertexBuffers[bufferIndex];
-            if((NSNull *)vertexBuffer != [NSNull null])
+            [renderEncoder setCullMode:MTLCullModeBack];
+            [renderEncoder setRenderPipelineState:_skyboxPipelineState];
+            
+            [renderEncoder setVertexBuffer:_cameraDataBuffers[_cameraBufferIndex]
+                                    offset:0
+                                   atIndex:BufferIndexCameraData];
+            
+            [renderEncoder setFragmentTexture:_skyMap atIndex:0];
+            
+            MTKMesh* metalKitMesh = _skybox.metalKitMesh;
+            for (NSUInteger bufferIndex = 0; bufferIndex < metalKitMesh.vertexBuffers.count; bufferIndex++)
             {
-                [renderEncoder setVertexBuffer:vertexBuffer.buffer
-                                        offset:vertexBuffer.offset
-                                       atIndex:bufferIndex];
+                MTKMeshBuffer *vertexBuffer = metalKitMesh.vertexBuffers[bufferIndex];
+                if((NSNull *)vertexBuffer != [NSNull null])
+                {
+                    [renderEncoder setVertexBuffer:vertexBuffer.buffer
+                                            offset:vertexBuffer.offset
+                                           atIndex:bufferIndex];
+                }
+            }
+            
+            for(MTKSubmesh *submesh in metalKitMesh.submeshes)
+            {
+                [renderEncoder drawIndexedPrimitives:submesh.primitiveType
+                                          indexCount:submesh.indexCount
+                                           indexType:submesh.indexType
+                                         indexBuffer:submesh.indexBuffer.buffer
+                                   indexBufferOffset:submesh.indexBuffer.offset];
             }
         }
 
-        for(MTKSubmesh *submesh in metalKitMesh.submeshes)
-        {
-            [renderEncoder drawIndexedPrimitives:submesh.primitiveType
-                                      indexCount:submesh.indexCount
-                                       indexType:submesh.indexType
-                                     indexBuffer:submesh.indexBuffer.buffer
-                               indexBufferOffset:submesh.indexBuffer.offset];
-        }
-
+        
         [renderEncoder endEncoding];
         [commandBuffer popDebugGroup];
         
-        
-        // Clamp values to the bloom threshold.
+
+        /// Step5. 后处理
+        if(false)
         {
-            [commandBuffer pushDebugGroup:@"Bloom Threshold"];
-            MTLRenderPassDescriptor* rpd = [[MTLRenderPassDescriptor alloc] init];
-            rpd.colorAttachments[0].loadAction = MTLLoadActionDontCare;
-            rpd.colorAttachments[0].storeAction = MTLStoreActionStore;
-            rpd.colorAttachments[0].texture = _bloomThresholdMap;
+            // Clamp values to the bloom threshold.
+            {
+                [commandBuffer pushDebugGroup:@"Bloom Threshold"];
+                MTLRenderPassDescriptor* rpd = [[MTLRenderPassDescriptor alloc] init];
+                rpd.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+                rpd.colorAttachments[0].storeAction = MTLStoreActionStore;
+                rpd.colorAttachments[0].texture = _bloomThresholdMap;
+                
+                id<MTLRenderCommandEncoder> renderEncoder = [commandBuffer renderCommandEncoderWithDescriptor:rpd];
+                [renderEncoder pushDebugGroup:@"Postprocessing"];
+                [renderEncoder setRenderPipelineState:_bloomThresholdPipeline];
+                [renderEncoder setFragmentTexture:_rawColorMap atIndex:0];
+                
+                float threshold = 2.0f;
+                [renderEncoder setFragmentBytes:&threshold length:sizeof(float) atIndex:0];
+                [renderEncoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
+                [renderEncoder popDebugGroup];
+                [renderEncoder endEncoding];
+                [commandBuffer popDebugGroup];
+            }
             
-            id<MTLRenderCommandEncoder> renderEncoder = [commandBuffer renderCommandEncoderWithDescriptor:rpd];
-            [renderEncoder pushDebugGroup:@"Postprocessing"];
-            [renderEncoder setRenderPipelineState:_bloomThresholdPipeline];
-            [renderEncoder setFragmentTexture:_rawColorMap atIndex:0];
-            
-            float threshold = 2.0f;
-            [renderEncoder setFragmentBytes:&threshold length:sizeof(float) atIndex:0];
-            [renderEncoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
-            [renderEncoder popDebugGroup];
-            [renderEncoder endEncoding];
-            [commandBuffer popDebugGroup];
+            // Blur the bloom.
+            {
+                [commandBuffer pushDebugGroup:@"Bloom Blur"];
+                MPSImageGaussianBlur* blur = [[MPSImageGaussianBlur alloc] initWithDevice:_device sigma:5.0f];
+                [blur encodeToCommandBuffer:commandBuffer
+                              sourceTexture:_bloomThresholdMap
+                         destinationTexture:_bloomBlurMap];
+                [commandBuffer popDebugGroup];
+            }
         }
-        
-        // Blur the bloom.
-        {
-            [commandBuffer pushDebugGroup:@"Bloom Blur"];
-            MPSImageGaussianBlur* blur = [[MPSImageGaussianBlur alloc] initWithDevice:_device sigma:5.0f];
-            [blur encodeToCommandBuffer:commandBuffer
-                          sourceTexture:_bloomThresholdMap
-                     destinationTexture:_bloomBlurMap];
-            [commandBuffer popDebugGroup];
-        }
+       
         
         // Merge the postprocessing results with the scene rendering.
         {

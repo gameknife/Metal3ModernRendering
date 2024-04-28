@@ -25,7 +25,7 @@ The implementation of the iOS view controller.
     _view = (MTKView *)self.view;
     _view.layer.backgroundColor = [UIColor colorWithRed:0.65 green:0.65 blue:0.65 alpha:1.0].CGColor;
     _view.device = MTLCreateSystemDefaultDevice();
-    _view.preferredFramesPerSecond = 30;
+    _view.preferredFramesPerSecond = 120;
 
     NSAssert(_view.device, @"Metal is not supported on this device");
 
