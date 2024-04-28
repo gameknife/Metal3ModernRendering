@@ -132,6 +132,7 @@ typedef struct ThinGBuffer
     RenderMode _renderMode;
     
     int _frameCount;
+    CGSize _size;
 }
 
 - (void)loadMPSSVGF {
@@ -270,6 +271,8 @@ typedef struct ThinGBuffer
     hd.size = size.width * size.height * 4 * 2 * 3;
     hd.storageMode = MTLStorageModePrivate;
     _rtMipmappingHeap = [_device newHeapWithDescriptor:hd];
+    
+    _size = size;
 }
 
 #pragma mark - Build Pipeline States
@@ -1284,7 +1287,7 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
             /// Step1. 全局Thin GBuffer，给CS使用
             ///
             
-            id<MTLTexture> depthNormalTexture = [_textureAllocator textureWithPixelFormat:MTLPixelFormatRGBA16Float width:1280 height:720];
+            id<MTLTexture> depthNormalTexture = [_textureAllocator textureWithPixelFormat:MTLPixelFormatRGBA16Float width:_size.width height:_size.height];
             
             MTLRenderPassDescriptor* gbufferPass = [MTLRenderPassDescriptor new];
             gbufferPass.colorAttachments[0].loadAction = MTLLoadActionClear;
@@ -1542,7 +1545,7 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
     _projectionMatrix = [self projectionMatrixWithAspect:aspect];
 
     // The passed-in size is already in backing coordinates.
-    [self resizeRTReflectionMapTo:size];
+    [self resizeRTReflectionMapTo:view.bounds.size];
     
     _frameCount = 0;
 }

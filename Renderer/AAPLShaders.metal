@@ -339,10 +339,9 @@ fragment ThinGBufferOut gBufferFragmentShader(ColorInOut in [[stage_in]])
     // out.direction = float4(in.r, 0.0);
     //out.direction = float4(in.normal, 0.0);
     
-    float2 motionVector = 0.0f;
-    
     // Map current pixel location to 0..1
-    float2 uv = in.position.xy / float2(1280, 720);
+    //float2 uv = in.position.xy / float2(1280, 720);
+    float2 uv = in.position.xy / in.position.w * float2(0.5f, -0.5f) + 0.5f;
     
     // Unproject the position from the previous frame then transform it from
     // NDC space to 0..1
@@ -388,10 +387,10 @@ kernel void rtShading(
         {
             auto position = positions.read(tid).xyz;
             auto normal = directions.read(tid).yzw;
-            Loki rng = Loki(tid.x + 1, tid.y + 1, lightData.frameCount);
+            Loki rng = Loki(tid.x + 1, tid.y + 1, 0);
             
             // 构造一个在normal半球内的ray
-            uint skyRayCount = 12;
+            uint skyRayCount = 8;
             float hit = 0.0;
             
             for( uint i = 0; i < skyRayCount; ++i)
@@ -423,13 +422,13 @@ kernel void rtShading(
             finalColor.x = hit;
             
             // lightcasting
-            uint sunRayCount = 6;
+            uint sunRayCount = 8;
             float shadowHit = 0;
             for( uint i = 0; i < sunRayCount; ++i)
             {
                 raytracing::ray r;
                 r.origin = position;
-                r.direction = normalize(lightData.directionalLightInvDirection + float3(rng.rand() - 0.5, 0.0, rng.rand() - 0.5) * 0.2);
+                r.direction = normalize(lightData.directionalLightInvDirection + float3(rng.rand() - 0.5, 0.0, rng.rand() - 0.5) * 0.5);
                 r.min_distance = 0.1;
                 r.max_distance = 20.0;
                 
