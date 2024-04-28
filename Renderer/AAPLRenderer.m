@@ -93,11 +93,17 @@ typedef struct ThinGBuffer
     NSArray< id<MTLAccelerationStructure> >* _primitiveAccelerationStructures;
     id< MTLHeap > _accelerationStructureHeap;
 
+    // Reflection
     id<MTLTexture> _rtReflectionMap;
     id<MTLFunction> _rtReflectionFunction;
     id<MTLComputePipelineState> _rtReflectionPipeline;
     id<MTLHeap> _rtMipmappingHeap;
     id<MTLRenderPipelineState> _rtMipmapPipeline;
+    
+    // Bindless DeferredShading
+    id<MTLTexture> _rtShadingMap;
+    id<MTLFunction> _rtShadingFunction;
+    id<MTLComputePipelineState> _rtShadingPipeline;
     
     // Postprocessing pipelines.
     id<MTLRenderPipelineState> _bloomThresholdPipeline;
@@ -118,6 +124,8 @@ typedef struct ThinGBuffer
     float _roughnessBias;
     float _exposure;
     RenderMode _renderMode;
+    
+    int _frameCount;
 }
 
 - (nonnull instancetype)initWithMetalKitView:(nonnull MTKView *)view size:(CGSize)size
@@ -197,6 +205,7 @@ typedef struct ThinGBuffer
                                                                                 mipmapped:YES];
     desc.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite | MTLTextureUsageRenderTarget;
     _rtReflectionMap = [_device newTextureWithDescriptor:desc];
+    _rtShadingMap = [_device newTextureWithDescriptor:desc];
     
     desc.mipmapLevelCount = 1;
     _rawColorMap = [_device newTextureWithDescriptor:desc];
@@ -212,7 +221,6 @@ typedef struct ThinGBuffer
     hd.size = size.width * size.height * 4 * 2 * 3;
     hd.storageMode = MTLStorageModePrivate;
     _rtMipmappingHeap = [_device newHeapWithDescriptor:hd];
-    
 }
 
 #pragma mark - Build Pipeline States
@@ -354,7 +362,12 @@ typedef struct ThinGBuffer
 
         _rtReflectionPipeline = [_device newComputePipelineStateWithFunction:_rtReflectionFunction error:&error];
         NSAssert(_rtReflectionPipeline, @"Failed to create RT reflection compute pipeline state: %@", error);
-
+        
+        
+        _rtShadingFunction = [defaultLibrary newFunctionWithName:@"rtShading"];
+        _rtShadingPipeline = [_device newComputePipelineStateWithFunction:_rtShadingFunction error:&error];
+        NSAssert(_rtShadingPipeline, @"Failed to create RT shading compute pipeline state: %@", error);
+        
         _renderMode = RMMetalRaytracing;
     }
     else
@@ -950,8 +963,9 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
     [self updateCameraState];
 
     AAPLLightData* pLightData = (AAPLLightData *)(_lightDataBuffer.contents);
-    pLightData->directionalLightInvDirection = -vector_normalize((vector_float3){ 0, -6, -6 });
+    pLightData->directionalLightInvDirection = -vector_normalize((vector_float3){ 0, -6, 6 });
     pLightData->lightIntensity = 5.0f;
+    pLightData->frameCount = 0;
 }
 
 - (void)updateCameraState
@@ -977,6 +991,9 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
     pCameraData->cameraPosition = camPos;
     pCameraData->metallicBias = _metallicBias;
     pCameraData->roughnessBias = _roughnessBias;
+    
+    AAPLLightData* pLightData = (AAPLLightData *)(_lightDataBuffer.contents);
+    pLightData->frameCount += 1;
 }
 
 #pragma mark - Rendering
@@ -1121,6 +1138,63 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
     }
 }
 
+- (void)executeCSProcess:(id<MTLCommandBuffer>)commandBuffer inPSO:(id<MTLComputePipelineState>)inPSO outTexture:(id<MTLTexture>)outTexture label:(NSString*)label {
+    id<MTLComputeCommandEncoder> compEnc = [commandBuffer computeCommandEncoder];
+    compEnc.label = label;
+    [compEnc setTexture:outTexture atIndex:OutImageIndex];
+    [compEnc setTexture:_thinGBuffer.positionTexture atIndex:ThinGBufferPositionIndex];
+    [compEnc setTexture:_thinGBuffer.directionTexture atIndex:ThinGBufferDirectionIndex];
+    [compEnc setTexture:_skyMap atIndex:AAPLSkyDomeTexture];
+    
+    // Bind the root of the argument buffer for the scene.
+    [compEnc setBuffer:_sceneArgumentBuffer offset:0 atIndex:SceneIndex];
+    
+    // Bind the prebuilt acceleration structure.
+    [compEnc setAccelerationStructure:_instanceAccelerationStructure atBufferIndex:AccelerationStructureIndex];
+    
+    [compEnc setBuffer:_instanceTransformBuffer offset:0 atIndex:BufferIndexInstanceTransforms];
+    [compEnc setBuffer:_cameraDataBuffers[_cameraBufferIndex] offset:0 atIndex:BufferIndexCameraData];
+    [compEnc setBuffer:_lightDataBuffer offset:0 atIndex:BufferIndexLightData];
+    
+    // Set the ray tracing reflection kernel.
+    [compEnc setComputePipelineState:inPSO];
+    
+    // Flag residency for indirectly referenced resources.
+    // These are:
+    // 1. All primitive acceleration structures.
+    // 2. Buffers and textures referenced through argument buffers.
+    
+    if ( _accelerationStructureHeap )
+    {
+        // Heap backs the acceleration structures. Mark the entire heap resident.
+        [compEnc useHeap:_accelerationStructureHeap];
+    }
+    else
+    {
+        // Acceleration structures are independent. Mark each one resident.
+        for ( id<MTLAccelerationStructure> primAccelStructure in _primitiveAccelerationStructures )
+        {
+            [compEnc useResource:primAccelStructure usage:MTLResourceUsageRead];
+        }
+    }
+    
+    for ( id<MTLResource> resource in _sceneResources )
+    {
+        [compEnc useResource:resource usage:MTLResourceUsageRead];
+    }
+    
+    // Determine the dispatch grid size and dispatch compute.
+    
+    NSUInteger w = inPSO.threadExecutionWidth;
+    NSUInteger h = inPSO.maxTotalThreadsPerThreadgroup / w;
+    MTLSize threadsPerThreadgroup = MTLSizeMake( w, h, 1 );
+    MTLSize threadsPerGrid = MTLSizeMake(outTexture.width, outTexture.height, 1);
+    
+    [compEnc dispatchThreads:threadsPerGrid threadsPerThreadgroup:threadsPerThreadgroup];
+    
+    [compEnc endEncoding];
+}
+
 - (void)drawInMTKView:(nonnull MTKView *)view
 {
     // Per-frame updates here.
@@ -1195,80 +1269,35 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
             // The ray-traced reflections.
             [commandBuffer pushDebugGroup:@"CS处理"];
             [commandBuffer encodeWaitForEvent:_accelerationStructureBuildEvent value:kInstanceAccelerationStructureBuild];
-            id<MTLComputeCommandEncoder> compEnc = [commandBuffer computeCommandEncoder];
-            compEnc.label = @"RaytracedReflectionsComputeEncoder";
-            [compEnc setTexture:_rtReflectionMap atIndex:OutImageIndex];
-            [compEnc setTexture:_thinGBuffer.positionTexture atIndex:ThinGBufferPositionIndex];
-            [compEnc setTexture:_thinGBuffer.directionTexture atIndex:ThinGBufferDirectionIndex];
-            [compEnc setTexture:_skyMap atIndex:AAPLSkyDomeTexture];
-
-            // Bind the root of the argument buffer for the scene.
-            [compEnc setBuffer:_sceneArgumentBuffer offset:0 atIndex:SceneIndex];
-
-            // Bind the prebuilt acceleration structure.
-            [compEnc setAccelerationStructure:_instanceAccelerationStructure atBufferIndex:AccelerationStructureIndex];
-
-            [compEnc setBuffer:_instanceTransformBuffer offset:0 atIndex:BufferIndexInstanceTransforms];
-            [compEnc setBuffer:_cameraDataBuffers[_cameraBufferIndex] offset:0 atIndex:BufferIndexCameraData];
-            [compEnc setBuffer:_lightDataBuffer offset:0 atIndex:BufferIndexLightData];
-
-            // Set the ray tracing reflection kernel.
-            [compEnc setComputePipelineState:_rtReflectionPipeline];
-
-            // Flag residency for indirectly referenced resources.
-            // These are:
-            // 1. All primitive acceleration structures.
-            // 2. Buffers and textures referenced through argument buffers.
-
-            if ( _accelerationStructureHeap )
-            {
-                // Heap backs the acceleration structures. Mark the entire heap resident.
-                [compEnc useHeap:_accelerationStructureHeap];
-            }
-            else
-            {
-                // Acceleration structures are independent. Mark each one resident.
-                for ( id<MTLAccelerationStructure> primAccelStructure in _primitiveAccelerationStructures )
-                {
-                    [compEnc useResource:primAccelStructure usage:MTLResourceUsageRead];
-                }
-            }
-
-            for ( id<MTLResource> resource in _sceneResources )
-            {
-                [compEnc useResource:resource usage:MTLResourceUsageRead];
-            }
             
-            // Determine the dispatch grid size and dispatch compute.
-
-            NSUInteger w = _rtReflectionPipeline.threadExecutionWidth;
-            NSUInteger h = _rtReflectionPipeline.maxTotalThreadsPerThreadgroup / w;
-            MTLSize threadsPerThreadgroup = MTLSizeMake( w, h, 1 );
-            MTLSize threadsPerGrid = MTLSizeMake(_rtReflectionMap.width, _rtReflectionMap.height, 1);
-
-            [compEnc dispatchThreads:threadsPerGrid threadsPerThreadgroup:threadsPerThreadgroup];
-
-            [compEnc endEncoding];
+            // reflection
+            [self executeCSProcess:commandBuffer inPSO:_rtReflectionPipeline outTexture:_rtReflectionMap label:@"光追反射"];
+            // shading
+            [self executeCSProcess:commandBuffer inPSO:_rtShadingPipeline outTexture:_rtShadingMap label:@"光追天光遮蔽"];
+            
             [commandBuffer popDebugGroup];
-
-            // Generally, for accurate rough reflections, a renderer performs cone ray tracing in
-            // the ray tracing kernel.  In this case, the renderer simplifies this by blurring the
-            // mirror-like reflections along the mipchain.  The renderer later biases the miplevel
-            // that the GPU samples when reading the reflection in the accumulation pass.
-
-            [commandBuffer pushDebugGroup:@"Generate Reflection Mipmaps"];
-            const BOOL gaussianBlur = NO;
-            if ( gaussianBlur )
+            
+            if(false)
             {
-                [self generateGaussMipmapsForTexture:_rtReflectionMap commandBuffer:commandBuffer];
+                // Generally, for accurate rough reflections, a renderer performs cone ray tracing in
+                // the ray tracing kernel.  In this case, the renderer simplifies this by blurring the
+                // mirror-like reflections along the mipchain.  The renderer later biases the miplevel
+                // that the GPU samples when reading the reflection in the accumulation pass.
+
+                [commandBuffer pushDebugGroup:@"Generate Reflection Mipmaps"];
+                const BOOL gaussianBlur = NO;
+                if ( gaussianBlur )
+                {
+                    [self generateGaussMipmapsForTexture:_rtReflectionMap commandBuffer:commandBuffer];
+                }
+                else
+                {
+                    id<MTLBlitCommandEncoder> genMips = [commandBuffer blitCommandEncoder];
+                    [genMips generateMipmapsForTexture:_rtReflectionMap];
+                    [genMips endEncoding];
+                }
+                [commandBuffer popDebugGroup];
             }
-            else
-            {
-                id<MTLBlitCommandEncoder> genMips = [commandBuffer blitCommandEncoder];
-                [genMips generateMipmapsForTexture:_rtReflectionMap];
-                [genMips endEncoding];
-            }
-            [commandBuffer popDebugGroup];
         }
 
         /// Step3. 常规的渲染pass
@@ -1301,6 +1330,7 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
         [renderEncoder setFrontFacingWinding:MTLWindingClockwise];
         [renderEncoder setDepthStencilState:_depthState];
         [renderEncoder setFragmentTexture:_rtReflectionMap atIndex:AAPLTextureIndexReflections];
+        [renderEncoder setFragmentTexture:_rtShadingMap atIndex:AAPLTextureIndexGI];
         [renderEncoder setFragmentTexture:_skyMap atIndex:AAPLSkyDomeTexture];
 
         [self encodeSceneRendering:renderEncoder];

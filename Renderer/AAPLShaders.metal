@@ -7,7 +7,7 @@ The Metal shaders and kernels.
 
 #include <metal_stdlib>
 #include <simd/simd.h>
-
+#include "Loki/loki_header.metal"
 // Include the header that this Metal shader code shares with the Swift/C code that executes Metal API commands.
 #include "AAPLShaderTypes.h"
 
@@ -92,7 +92,7 @@ float3 computeNormalMap(ColorInOut in, texture2d<float> normalMapTexture) {
 float3 computeDiffuse(LightingParameters parameters)
 {
     float3 diffuseRawValue = float3(((1.0/PI) * parameters.baseColor) * (1.0 - parameters.metalness));
-    return diffuseRawValue * (parameters.nDotl * parameters.ambientOcclusion);
+    return diffuseRawValue * (parameters.nDotl);
 }
 
 float Distribution(float NdotH, float roughness)
@@ -153,9 +153,9 @@ LightingParameters calculateParameters(ColorInOut in,
 
     parameters.roughness = max(roughnessMap.sample(linearSampler, in.texCoord.xy).x, 0.001f) * 0.8;
 
-    parameters.metalness = max(metallicMap.sample(linearSampler, in.texCoord.xy).x, 0.1);
+    parameters.metalness = 0.0;//max(metallicMap.sample(linearSampler, in.texCoord.xy).x, 0.1);
 
-    parameters.ambientOcclusion = ambientOcclusionMap.sample(linearSampler, in.texCoord.xy).x;
+    parameters.ambientOcclusion = 1.0;//ambientOcclusionMap.sample(linearSampler, in.texCoord.xy).x;
 
     parameters.reflectedVector = reflect(-parameters.viewDir, parameters.normal);
     
@@ -265,7 +265,8 @@ fragment float4 fragmentShader(
                     constant AAPLSubmeshKeypath&submeshKeypath        [[ buffer(BufferIndexSubmeshKeypath)]],
                     constant Scene*             pScene                [[ buffer(SceneIndex)]],
                     texture2d<float>            skydomeMap            [[ texture(AAPLSkyDomeTexture) ]],
-                    texture2d<float>            rtReflections         [[ texture(AAPLTextureIndexReflections), function_constant(is_raytracing_enabled)]])
+                    texture2d<float>            rtReflections         [[ texture(AAPLTextureIndexReflections), function_constant(is_raytracing_enabled)]],
+                    texture2d<float>            rtShadings            [[ texture(AAPLTextureIndexGI), function_constant(is_raytracing_enabled)]])
 {
     constexpr sampler colorSampler(mip_filter::linear,
                                    mag_filter::linear,
@@ -285,7 +286,7 @@ fragment float4 fragmentShader(
                                                     pSubmesh->materials[AAPLTextureIndexRoughness],        //roughnessMap
                                                     pSubmesh->materials[AAPLTextureIndexAmbientOcclusion], //ambientOcclusionMap
                                                     skydomeMap);
-
+    float3 skylight = params.baseColor.xyz * params.ambientOcclusion * 0.1;
     float li = lightData.lightIntensity;
     params.roughness += cameraData.roughnessBias;
     clamp( params.roughness, 0.f, 0.8f );
@@ -297,10 +298,14 @@ fragment float4 fragmentShader(
 
         float hasReflection = (dot( reflectedColor.rgb, float3(1,1,1) ) > 0.0);
         params.irradiatedColor = mix(params.irradiatedColor, reflectedColor.rgb, hasReflection);
-
+        
+        
+        float4 gi = rtShadings.sample(colorSampler, screenTexcoord, level(mipLevel)).xyzw;
+        skylight *= sqrt(gi.x);
+        li *= gi.y;
     }
     params.metalness += cameraData.metallicBias;
-    float4 final_color = float4(computeSpecular(params) + li * computeDiffuse(params), 1.0f);
+    float4 final_color = float4(skylight + computeSpecular(params) + li * computeDiffuse(params), 1.0f);
     return final_color;
 }
 
@@ -324,7 +329,9 @@ fragment ThinGBufferOut gBufferFragmentShader(ColorInOut in [[stage_in]])
     ThinGBufferOut out;
 
     out.position = float4(in.worldPosition, 1.0);
-    out.direction = float4(in.r, 0.0);
+    // replace with normal, reflection move to the cs
+    // out.direction = float4(in.r, 0.0);
+    out.direction = float4(in.normal, 0.0);
 
     return out;
 }
@@ -333,6 +340,98 @@ fragment ThinGBufferOut gBufferFragmentShader(ColorInOut in [[stage_in]])
 
 #pragma mark - Ray tracing
 using raytracing::instance_acceleration_structure;
+
+kernel void rtShading(
+             texture2d< float, access::write >      outImage                [[texture(OutImageIndex)]],
+             texture2d< float >                     positions               [[texture(ThinGBufferPositionIndex)]],
+             texture2d< float >                     directions              [[texture(ThinGBufferDirectionIndex)]],
+             texture2d< float >                     skydomeMap              [[texture(AAPLSkyDomeTexture)]],
+             constant AAPLInstanceTransform*        instanceTransforms      [[buffer(BufferIndexInstanceTransforms)]],
+             constant AAPLCameraData&               cameraData              [[buffer(BufferIndexCameraData)]],
+             constant AAPLLightData&                lightData               [[buffer(BufferIndexLightData)]],
+             constant Scene*                        pScene                  [[buffer(SceneIndex)]],
+             instance_acceleration_structure        accelerationStructure   [[buffer(AccelerationStructureIndex)]],
+             uint2 tid [[thread_position_in_grid]])
+{
+
+    uint w = outImage.get_width();
+    uint h = outImage.get_height();
+    if ( tid.x < w&& tid.y < h )
+    {
+        float4 finalColor = float4( 0.0, 0.0, 0.0, 1.0 );
+        if (is_null_instance_acceleration_structure(accelerationStructure))
+        {
+            finalColor = float4( 1.0, 0.0, 1.0, 1.0 );
+        }
+        else
+        {
+            auto position = positions.read(tid).xyz;
+            auto normal = directions.read(tid).xyz;
+            Loki rng = Loki(tid.x + 1, tid.y + 1, lightData.frameCount);
+            
+            // 构造一个在normal半球内的ray
+            uint skyRayCount = 4;
+            float hit = 0.0;
+            
+            for( uint i = 0; i < skyRayCount; ++i)
+            {
+                raytracing::ray r;
+
+                r.origin = position;
+                r.direction = normalize(float3(rng.rand() - 0.5,0.5,rng.rand() - 0.5));
+                r.min_distance = 0.1;
+                r.max_distance = FLT_MAX;
+                
+                
+                raytracing::intersector<raytracing::instancing, raytracing::triangle_data> inter;
+                inter.assume_geometry_type( raytracing::geometry_type::triangle );
+                auto intersection = inter.intersect( r, accelerationStructure, 0xFF );
+                if ( intersection.type == raytracing::intersection_type::triangle )
+                {
+                    // 打到了
+                    hit += 1.0;
+                }
+                else if ( intersection.type == raytracing::intersection_type::none )
+                {
+                    // 没打到
+                    
+                }
+            }
+            
+            hit = 1.0 - hit / (float)skyRayCount;
+            finalColor.x = hit;
+            
+            // lightcasting
+            uint sunRayCount = 4;
+            float shadowHit = 0;
+            for( uint i = 0; i < skyRayCount; ++i)
+            {
+                raytracing::ray r;
+                r.origin = position;
+                r.direction = normalize(lightData.directionalLightInvDirection + float3(rng.rand() - 0.5, 0.0, rng.rand() - 0.5) * 0.2);
+                r.min_distance = 0.1;
+                r.max_distance = FLT_MAX;
+                
+                raytracing::intersector<raytracing::instancing, raytracing::triangle_data> inter;
+                inter.assume_geometry_type( raytracing::geometry_type::triangle );
+                auto intersection = inter.intersect( r, accelerationStructure, 0xFF );
+                if ( intersection.type == raytracing::intersection_type::triangle )
+                {
+                    // 打到了
+                    shadowHit += 1.0;
+                }
+                else if ( intersection.type == raytracing::intersection_type::none )
+                {
+                    // 没打到
+                }
+            }
+            
+            shadowHit = 1.0 - shadowHit / (float)sunRayCount;
+            finalColor.y = shadowHit;
+        }
+        outImage.write( finalColor, tid );
+    }
+}
 
 kernel void rtReflection(
              texture2d< float, access::write >      outImage                [[texture(OutImageIndex)]],
@@ -359,11 +458,19 @@ kernel void rtReflection(
         else
         {
             raytracing::ray r;
-            r.origin = positions.read(tid).xyz;
-            r.direction = normalize(directions.read(tid).xyz);
+            auto position = positions.read(tid).xyz;
+            auto normal = directions.read(tid).xyz;
+            float3 v = normalize(position - cameraData.cameraPosition);
+            auto refl = reflect( v, normal );
+            r.origin = position;
+            r.direction = refl;
             r.min_distance = 0.1;
             r.max_distance = FLT_MAX;
-
+            
+            // 这里造了一根反射ray，找到反射的tri，然后算出光照结果
+            // 非常完整，相当于是单像素的scene rendering了
+            // 这里可以作一个简单的raytraced ao，半球内随机打ray，有结果的贡献遮蔽
+            
             raytracing::intersector<raytracing::instancing, raytracing::triangle_data> inter;
             inter.assume_geometry_type( raytracing::geometry_type::triangle );
             auto intersection = inter.intersect( r, accelerationStructure, 0xFF );

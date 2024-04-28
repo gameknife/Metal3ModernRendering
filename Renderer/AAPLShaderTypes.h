@@ -66,7 +66,8 @@ typedef enum AAPLTextureIndex
     AAPLTextureIndexAmbientOcclusion = 4,
     AAPLTextureIndexIrradianceMap    = 5,
     AAPLTextureIndexReflections      = 6,
-    AAPLSkyDomeTexture               = 7,
+    AAPLTextureIndexGI               = 7,
+    AAPLSkyDomeTexture               = 8,
     AAPLMaterialTextureCount = AAPLTextureIndexAmbientOcclusion+1,
 } AAPLTextureIndex;
 
@@ -99,6 +100,7 @@ typedef struct
     // Per Light Properties
     vector_float3 directionalLightInvDirection;
     float lightIntensity;
+    int frameCount;
 
 } AAPLLightData;
 

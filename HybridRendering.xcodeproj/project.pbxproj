@@ -31,6 +31,10 @@
 		715E38752602ECE300951BA1 /* AAPLMesh.m in Sources */ = {isa = PBXBuildFile; fileRef = 715E38742602ECE300951BA1 /* AAPLMesh.m */; };
 		71B091C72804CA2C001610BF /* kloppenheim_06_4k.hdr in Resources */ = {isa = PBXBuildFile; fileRef = 71B091C62804CA2C001610BF /* kloppenheim_06_4k.hdr */; };
 		71B091C82804CA2C001610BF /* kloppenheim_06_4k.hdr in Resources */ = {isa = PBXBuildFile; fileRef = 71B091C62804CA2C001610BF /* kloppenheim_06_4k.hdr */; };
+		A0D7609F2BDE47B000F5B2FA /* loki.metal in Sources */ = {isa = PBXBuildFile; fileRef = A0D7609D2BDE47B000F5B2FA /* loki.metal */; };
+		A0D760A02BDE47B000F5B2FA /* loki.metal in Sources */ = {isa = PBXBuildFile; fileRef = A0D7609D2BDE47B000F5B2FA /* loki.metal */; };
+		A0D760A12BDE47B000F5B2FA /* loki_header.metal in Sources */ = {isa = PBXBuildFile; fileRef = A0D7609E2BDE47B000F5B2FA /* loki_header.metal */; };
+		A0D760A22BDE47B000F5B2FA /* loki_header.metal in Sources */ = {isa = PBXBuildFile; fileRef = A0D7609E2BDE47B000F5B2FA /* loki_header.metal */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -61,6 +65,8 @@
 		715E38742602ECE300951BA1 /* AAPLMesh.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = AAPLMesh.m; sourceTree = "<group>"; };
 		715E387B2605B97200951BA1 /* AAPLArgumentBufferTypes.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = AAPLArgumentBufferTypes.h; sourceTree = "<group>"; };
 		71B091C62804CA2C001610BF /* kloppenheim_06_4k.hdr */ = {isa = PBXFileReference; lastKnownFileType = file; path = kloppenheim_06_4k.hdr; sourceTree = "<group>"; };
+		A0D7609D2BDE47B000F5B2FA /* loki.metal */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.metal; name = loki.metal; path = Loki/loki.metal; sourceTree = "<group>"; };
+		A0D7609E2BDE47B000F5B2FA /* loki_header.metal */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.metal; name = loki_header.metal; path = Loki/loki_header.metal; sourceTree = "<group>"; };
 		A20354167CB578FC9529CD97 /* LICENSE.txt */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text; path = LICENSE.txt; sourceTree = "<group>"; };
 		C0031F87353C3407AAB54D4C /* SampleCode.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = SampleCode.xcconfig; path = Configuration/SampleCode.xcconfig; sourceTree = "<group>"; };
 		F4D4B81EEAB41675409DBE46 /* ACKNOWLEDGMENTS.txt */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text; path = ACKNOWLEDGMENTS.txt; sourceTree = "<group>"; };
@@ -152,6 +158,8 @@
 		715E384B2602E7C600951BA1 /* Renderer */ = {
 			isa = PBXGroup;
 			children = (
+				A0D7609E2BDE47B000F5B2FA /* loki_header.metal */,
+				A0D7609D2BDE47B000F5B2FA /* loki.metal */,
 				715E38732602ECE300951BA1 /* AAPLMesh.h */,
 				715E38742602ECE300951BA1 /* AAPLMesh.m */,
 				715E386C2602E9CE00951BA1 /* AAPLMathUtilities.h */,
@@ -283,8 +291,10 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A0D760A22BDE47B000F5B2FA /* loki_header.metal in Sources */,
 				40D865A826F1441D0065BDFB /* main.m in Sources */,
 				40D865A426F143460065BDFB /* AAPLRenderer.m in Sources */,
+				A0D760A02BDE47B000F5B2FA /* loki.metal in Sources */,
 				7158C4AB281CB953004F24C5 /* AAPLViewController.m in Sources */,
 				40D865A326F143460065BDFB /* AAPLMathUtilities.m in Sources */,
 				40D865A526F143460065BDFB /* AAPLShaders.metal in Sources */,
@@ -297,8 +307,10 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A0D760A12BDE47B000F5B2FA /* loki_header.metal in Sources */,
 				715E385F2602E7C800951BA1 /* main.m in Sources */,
 				715E38562602E7C600951BA1 /* AAPLShaders.metal in Sources */,
+				A0D7609F2BDE47B000F5B2FA /* loki.metal in Sources */,
 				715E38512602E7C600951BA1 /* AAPLRenderer.m in Sources */,
 				71440B70260EBF4900D4D915 /* AAPLMathUtilities.m in Sources */,
 				715E38752602ECE300951BA1 /* AAPLMesh.m in Sources */,
