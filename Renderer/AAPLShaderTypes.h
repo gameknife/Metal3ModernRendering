@@ -66,8 +66,8 @@ typedef enum AAPLTextureIndex
     AAPLTextureIndexAmbientOcclusion = 4,
     AAPLTextureIndexIrradianceMap    = 5,
     AAPLTextureIndexReflections      = 6,
-    AAPLTextureIndexGI               = 7,
-    AAPLSkyDomeTexture               = 8,
+    AAPLTextureIndexGI           = 7,
+    AAPLSkyDomeTexture               = 9,
     AAPLMaterialTextureCount = AAPLTextureIndexAmbientOcclusion+1,
 } AAPLTextureIndex;
 

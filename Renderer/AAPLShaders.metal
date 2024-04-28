@@ -391,7 +391,7 @@ kernel void rtShading(
             Loki rng = Loki(tid.x + 1, tid.y + 1, lightData.frameCount);
             
             // 构造一个在normal半球内的ray
-            uint skyRayCount = 8;
+            uint skyRayCount = 12;
             float hit = 0.0;
             
             for( uint i = 0; i < skyRayCount; ++i)
@@ -423,9 +423,9 @@ kernel void rtShading(
             finalColor.x = hit;
             
             // lightcasting
-            uint sunRayCount = 8;
+            uint sunRayCount = 6;
             float shadowHit = 0;
-            for( uint i = 0; i < skyRayCount; ++i)
+            for( uint i = 0; i < sunRayCount; ++i)
             {
                 raytracing::ray r;
                 r.origin = position;
@@ -453,6 +453,7 @@ kernel void rtShading(
         outImage.write( finalColor, tid );
     }
 }
+
 
 kernel void rtReflection(
              texture2d< float, access::write >      outImage                [[texture(OutImageIndex)]],
