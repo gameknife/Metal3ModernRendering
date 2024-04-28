@@ -56,7 +56,8 @@ typedef struct ModelInstance
 typedef struct ThinGBuffer
 {
     id<MTLTexture> positionTexture;
-    id<MTLTexture> directionTexture;
+    id<MTLTexture> depthNormalTexture;
+    id<MTLTexture> motionVectorTexture;
 } ThinGBuffer;
 
 @implementation AAPLRenderer
@@ -215,7 +216,8 @@ typedef struct ThinGBuffer
     desc.pixelFormat = MTLPixelFormatRGBA16Float;
     desc.usage = MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget;
     _thinGBuffer.positionTexture = [_device newTextureWithDescriptor:desc];
-    _thinGBuffer.directionTexture = [_device newTextureWithDescriptor:desc];
+    _thinGBuffer.depthNormalTexture = [_device newTextureWithDescriptor:desc];
+    _thinGBuffer.motionVectorTexture = [_device newTextureWithDescriptor:desc];
     
     MTLHeapDescriptor* hd = [[MTLHeapDescriptor alloc] init];
     hd.size = size.width * size.height * 4 * 2 * 3;
@@ -336,6 +338,7 @@ typedef struct ThinGBuffer
             pipelineStateDescriptor.fragmentFunction = gBufferFragmentFunction;
             pipelineStateDescriptor.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float;
             pipelineStateDescriptor.colorAttachments[1].pixelFormat = MTLPixelFormatRGBA16Float;
+            pipelineStateDescriptor.colorAttachments[2].pixelFormat = MTLPixelFormatRGBA16Float;
 
             _gbufferPipelineState = [_device newRenderPipelineStateWithDescriptor:pipelineStateDescriptor error:&error];
             NSAssert(_gbufferPipelineState, @"Failed to create GBuffer pipeline state: %@", error);
@@ -1146,7 +1149,7 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
     compEnc.label = label;
     [compEnc setTexture:outTexture atIndex:OutImageIndex];
     [compEnc setTexture:_thinGBuffer.positionTexture atIndex:ThinGBufferPositionIndex];
-    [compEnc setTexture:_thinGBuffer.directionTexture atIndex:ThinGBufferDirectionIndex];
+    [compEnc setTexture:_thinGBuffer.depthNormalTexture atIndex:ThinGBufferDirectionIndex];
     [compEnc setTexture:_skyMap atIndex:AAPLSkyDomeTexture];
     
     // Bind the root of the argument buffer for the scene.
@@ -1238,7 +1241,12 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
             gbufferPass.colorAttachments[1].loadAction = MTLLoadActionClear;
             gbufferPass.colorAttachments[1].clearColor = MTLClearColorMake(0, 0, 0, 1);
             gbufferPass.colorAttachments[1].storeAction = MTLStoreActionStore;
-            gbufferPass.colorAttachments[1].texture = _thinGBuffer.directionTexture;
+            gbufferPass.colorAttachments[1].texture = _thinGBuffer.depthNormalTexture;
+            
+            gbufferPass.colorAttachments[2].loadAction = MTLLoadActionClear;
+            gbufferPass.colorAttachments[2].clearColor = MTLClearColorMake(0, 0, 0, 1);
+            gbufferPass.colorAttachments[2].storeAction = MTLStoreActionStore;
+            gbufferPass.colorAttachments[2].texture = _thinGBuffer.motionVectorTexture;
 
             [self copyDepthStencilConfigurationFrom:renderPassDescriptor to:gbufferPass];
             gbufferPass.depthAttachment.storeAction = MTLStoreActionStore;

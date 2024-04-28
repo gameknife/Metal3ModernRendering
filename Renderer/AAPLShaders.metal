@@ -21,6 +21,8 @@ constant float kMaxHDRValue = 500.0f;
 typedef struct
 {
     float4 position [[position]];
+    float4 prevPosition;
+    float3 viewPosition;
     float3 ndcpos;
     float3 worldPosition;
     float3 normal;
@@ -227,6 +229,8 @@ vertex ColorInOut vertexShader(Vertex in [[stage_in]],
 
     float4 position = float4(in.position, 1.0);
     out.position = cameraData.projectionMatrix * cameraData.viewMatrix * instanceTransform.modelViewMatrix * position;
+    out.prevPosition = cameraData.prevProjectionMatrix * cameraData.prevViewMatrix * instanceTransform.modelViewMatrix * position;
+    out.viewPosition = (cameraData.viewMatrix * instanceTransform.modelViewMatrix * position).xyz;
     out.ndcpos = out.position.xyz/out.position.w;
 
     // Reflections and lighting that occur in the world space, so
@@ -323,6 +327,7 @@ struct ThinGBufferOut
 {
     float4 position [[color(0)]];
     float4 direction [[color(1)]];
+    float4 motionVector [[color(2)]];
 };
 
 fragment ThinGBufferOut gBufferFragmentShader(ColorInOut in [[stage_in]])
@@ -332,8 +337,23 @@ fragment ThinGBufferOut gBufferFragmentShader(ColorInOut in [[stage_in]])
     out.position = float4(in.worldPosition, 1.0);
     // replace with normal, reflection move to the cs
     // out.direction = float4(in.r, 0.0);
-    out.direction = float4(in.normal, 0.0);
+    //out.direction = float4(in.normal, 0.0);
+    
+    float2 motionVector = 0.0f;
+    
+    // Map current pixel location to 0..1
+    float2 uv = in.position.xy / float2(1280, 720);
+    
+    // Unproject the position from the previous frame then transform it from
+    // NDC space to 0..1
+    float2 prevUV = in.prevPosition.xy / in.prevPosition.w * float2(0.5f, -0.5f) + 0.5f;
+    
 
+    
+    // Then the motion vector is simply the difference between the two
+    out.direction = float4(length(in.viewPosition), in.normal);
+    out.motionVector = float4(uv - prevUV, 0, 0);
+    
     return out;
 }
 
@@ -367,7 +387,7 @@ kernel void rtShading(
         else
         {
             auto position = positions.read(tid).xyz;
-            auto normal = directions.read(tid).xyz;
+            auto normal = directions.read(tid).yzw;
             Loki rng = Loki(tid.x + 1, tid.y + 1, lightData.frameCount);
             
             // 构造一个在normal半球内的ray
@@ -460,7 +480,7 @@ kernel void rtReflection(
         {
             raytracing::ray r;
             auto position = positions.read(tid).xyz;
-            auto normal = directions.read(tid).xyz;
+            auto normal = directions.read(tid).yzw;
             float3 v = normalize(position - cameraData.cameraPosition);
             auto refl = reflect( v, normal );
             r.origin = position;
