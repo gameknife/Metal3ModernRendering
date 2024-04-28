@@ -52,7 +52,7 @@ The implementation of the macOS view controller.
                     innerStrongSelf->_loadingLabel.hidden = YES;
                     
                     [innerStrongSelf->_renderer mtkView:innerStrongSelf->_view
-                                 drawableSizeWillChange:innerStrongSelf->_view.drawableSize];
+                                 drawableSizeWillChange:innerStrongSelf->_view.bounds.size];
                     
                     innerStrongSelf->_view.delegate = innerStrongSelf->_renderer;
                 }

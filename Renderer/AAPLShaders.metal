@@ -153,7 +153,7 @@ LightingParameters calculateParameters(ColorInOut in,
 
     parameters.roughness = max(roughnessMap.sample(linearSampler, in.texCoord.xy).x, 0.001f) * 0.8;
 
-    parameters.metalness = 0.0;//max(metallicMap.sample(linearSampler, in.texCoord.xy).x, 0.1);
+    parameters.metalness = max(metallicMap.sample(linearSampler, in.texCoord.xy).x, 0.1);
 
     parameters.ambientOcclusion = 1.0;//ambientOcclusionMap.sample(linearSampler, in.texCoord.xy).x;
 
@@ -289,7 +289,7 @@ fragment float4 fragmentShader(
     float3 skylight = params.baseColor.xyz * params.ambientOcclusion * 0.1;
     float li = lightData.lightIntensity;
     params.roughness += cameraData.roughnessBias;
-    clamp( params.roughness, 0.f, 0.8f );
+    clamp( params.roughness, 0.f, 1.0f );
 
     if ( is_raytracing_enabled )
     {
@@ -300,12 +300,13 @@ fragment float4 fragmentShader(
         params.irradiatedColor = mix(params.irradiatedColor, reflectedColor.rgb, hasReflection);
         
         
-        float4 gi = rtShadings.sample(colorSampler, screenTexcoord, level(mipLevel)).xyzw;
+        float4 gi = rtShadings.sample(colorSampler, screenTexcoord, level(0)).xyzw;
         skylight *= sqrt(gi.x);
         li *= gi.y;
     }
     params.metalness += cameraData.metallicBias;
-    float4 final_color = float4(skylight + computeSpecular(params) + li * computeDiffuse(params), 1.0f);
+    //float4 final_color = float4(skylight + computeSpecular(params) + li * computeDiffuse(params), 1.0f);
+    float4 final_color = float4(skylight + li * computeDiffuse(params), 1.0f);
     return final_color;
 }
 
@@ -370,7 +371,7 @@ kernel void rtShading(
             Loki rng = Loki(tid.x + 1, tid.y + 1, lightData.frameCount);
             
             // 构造一个在normal半球内的ray
-            uint skyRayCount = 4;
+            uint skyRayCount = 8;
             float hit = 0.0;
             
             for( uint i = 0; i < skyRayCount; ++i)
@@ -380,7 +381,7 @@ kernel void rtShading(
                 r.origin = position;
                 r.direction = normalize(float3(rng.rand() - 0.5,0.5,rng.rand() - 0.5));
                 r.min_distance = 0.1;
-                r.max_distance = FLT_MAX;
+                r.max_distance = 20.0;
                 
                 
                 raytracing::intersector<raytracing::instancing, raytracing::triangle_data> inter;
@@ -402,7 +403,7 @@ kernel void rtShading(
             finalColor.x = hit;
             
             // lightcasting
-            uint sunRayCount = 4;
+            uint sunRayCount = 8;
             float shadowHit = 0;
             for( uint i = 0; i < skyRayCount; ++i)
             {
@@ -410,7 +411,7 @@ kernel void rtShading(
                 r.origin = position;
                 r.direction = normalize(lightData.directionalLightInvDirection + float3(rng.rand() - 0.5, 0.0, rng.rand() - 0.5) * 0.2);
                 r.min_distance = 0.1;
-                r.max_distance = FLT_MAX;
+                r.max_distance = 20.0;
                 
                 raytracing::intersector<raytracing::instancing, raytracing::triangle_data> inter;
                 inter.assume_geometry_type( raytracing::geometry_type::triangle );

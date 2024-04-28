@@ -504,11 +504,11 @@ The implementation for the mesh and submesh objects.
     
     [material setProperty:[[MDLMaterialProperty alloc] initWithName:@"metallic"
                                                            semantic:MDLMaterialSemanticMetallic
-                                                             string:@"white"]];
+                                                             string:@"black"]];
     
     [material setProperty:[[MDLMaterialProperty alloc] initWithName:@"roughness"
                                                            semantic:MDLMaterialSemanticRoughness
-                                                             string:@"black"]];
+                                                             string:@"white"]];
     
     [material setProperty:[[MDLMaterialProperty alloc] initWithName:@"tangentNormal"
                                                            semantic:MDLMaterialSemanticTangentSpaceNormal

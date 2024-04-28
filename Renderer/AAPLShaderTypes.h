@@ -91,6 +91,11 @@ typedef struct AAPLCameraData
     vector_float3 cameraPosition;
     float metallicBias;
     float roughnessBias;
+    
+    matrix_float4x4 prevProjectionMatrix;
+    matrix_float4x4 prevViewMatrix;
+    vector_float3 prevCameraPosition;
+    
 } AAPLCameraData;
 
 // The structure that the shader and the C code share to ensure the layout of

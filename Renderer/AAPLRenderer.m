@@ -163,7 +163,7 @@ typedef struct ThinGBuffer
         }
 
         // Call this last to ensure everything else builds.
-        [self resizeRTReflectionMapTo:view.drawableSize];
+        [self resizeRTReflectionMapTo:size];
         // ray-trace加速结构
         [self buildRTAccelerationStructures];
         _cameraPanSpeedFactor = 0.5f;
@@ -976,6 +976,7 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
 
     // Update Projection Matrix
     AAPLCameraData* pCameraData = (AAPLCameraData *)_cameraDataBuffers[_cameraBufferIndex].contents;
+    pCameraData->prevProjectionMatrix = pCameraData->projectionMatrix;
     pCameraData->projectionMatrix = _projectionMatrix;
 
     // Update Camera Position (and View Matrix):
@@ -987,7 +988,9 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
         _cameraAngle -= (2 * M_PI);
     }
 
+    pCameraData->prevViewMatrix = pCameraData->viewMatrix;
     pCameraData->viewMatrix = matrix4x4_translation( -camPos );
+    pCameraData->prevCameraPosition = pCameraData->cameraPosition;
     pCameraData->cameraPosition = camPos;
     pCameraData->metallicBias = _metallicBias;
     pCameraData->roughnessBias = _roughnessBias;
@@ -1271,13 +1274,13 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
             [commandBuffer encodeWaitForEvent:_accelerationStructureBuildEvent value:kInstanceAccelerationStructureBuild];
             
             // reflection
-            [self executeCSProcess:commandBuffer inPSO:_rtReflectionPipeline outTexture:_rtReflectionMap label:@"光追反射"];
+            //[self executeCSProcess:commandBuffer inPSO:_rtReflectionPipeline outTexture:_rtReflectionMap label:@"光追反射"];
             // shading
             [self executeCSProcess:commandBuffer inPSO:_rtShadingPipeline outTexture:_rtShadingMap label:@"光追天光遮蔽"];
             
             [commandBuffer popDebugGroup];
             
-            if(false)
+            if(true)
             {
                 // Generally, for accurate rough reflections, a renderer performs cone ray tracing in
                 // the ray tracing kernel.  In this case, the renderer simplifies this by blurring the
