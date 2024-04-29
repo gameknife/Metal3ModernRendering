@@ -105,6 +105,7 @@ typedef struct ThinGBuffer
     
     // Bindless DeferredShading
     id<MTLTexture> _rtShadingMap;
+    id<MTLTexture> _rtIrradianceMap;
     id<MTLFunction> _rtShadingFunction;
     id<MTLComputePipelineState> _rtShadingPipeline;
     
@@ -118,6 +119,7 @@ typedef struct ThinGBuffer
     // Denoiser
     MPSSVGFDefaultTextureAllocator *_textureAllocator;
     MPSSVGFDenoiser *_denoiser;
+    MPSSVGFDenoiser *_denoiserIrr;
     MPSTemporalAA *_TAA;
     
     ThinGBuffer _thinGBuffer;
@@ -142,37 +144,48 @@ typedef struct ThinGBuffer
     // throughout and across frames
     _textureAllocator = [[MPSSVGFDefaultTextureAllocator alloc] initWithDevice:_device];
     
-    // Create an MPSSVGF object. This object encodes the low-level
-    // kernels used by the MPSSVGFDenoiser object and allows the app
-    // to fine-tune the denoising process.
-    MPSSVGF *svgf = [[MPSSVGF alloc] initWithDevice:_device];
-    
-    // The app only denoises shadows which only have a single-channel,
-    // so set the channel count to 1. This is faster then denoising
-    // all 3 channels on an RGB image.
-    svgf.channelCount = 3;
-    
-    // The app integrates samples over time while limiting ghosting artifacts,
-    // so set the temporal weighting to an exponential moving average and
-    // reduce the temporal blending factor
-    svgf.temporalWeighting = MPSTemporalWeightingExponentialMovingAverage;
-    svgf.temporalReprojectionBlendFactor = 0.1f;
-    
-    // Create the MPSSVGFDenoiser convenience object. Although you
-    // could call the low-level denoising kernels directly on the MPSSVGF
-    // object, for simplicity this sample lets the MPSSVGFDenoiser object
-    // take care of it.
-    _denoiser = [[MPSSVGFDenoiser alloc] initWithSVGF:svgf textureAllocator:_textureAllocator];
-    
-    // Adjust the number of bilateral filter iterations used by the denoising
-    // process. More iterations will tend to produce better quality at the cost
-    // of performance, while fewer iterations will perform better but have
-    // lower quality. Five iterations is a good starting point. The best way to
-    // improve quality is to reduce the amount of noise in the denoiser's input
-    // image using techniques such as importance sampling and low-discrepancy
-    // random sequences.
-    _denoiser.bilateralFilterIterations = 5;
-    
+    {
+        // Create an MPSSVGF object. This object encodes the low-level
+        // kernels used by the MPSSVGFDenoiser object and allows the app
+        // to fine-tune the denoising process.
+        MPSSVGF *svgf = [[MPSSVGF alloc] initWithDevice:_device];
+        
+        // The app only denoises shadows which only have a single-channel,
+        // so set the channel count to 1. This is faster then denoising
+        // all 3 channels on an RGB image.
+        svgf.channelCount = 3;
+        
+        // The app integrates samples over time while limiting ghosting artifacts,
+        // so set the temporal weighting to an exponential moving average and
+        // reduce the temporal blending factor
+        svgf.temporalWeighting = MPSTemporalWeightingExponentialMovingAverage;
+        svgf.temporalReprojectionBlendFactor = 0.1f;
+        
+        // Create the MPSSVGFDenoiser convenience object. Although you
+        // could call the low-level denoising kernels directly on the MPSSVGF
+        // object, for simplicity this sample lets the MPSSVGFDenoiser object
+        // take care of it.
+        _denoiser = [[MPSSVGFDenoiser alloc] initWithSVGF:svgf textureAllocator:_textureAllocator];
+        
+        // Adjust the number of bilateral filter iterations used by the denoising
+        // process. More iterations will tend to produce better quality at the cost
+        // of performance, while fewer iterations will perform better but have
+        // lower quality. Five iterations is a good starting point. The best way to
+        // improve quality is to reduce the amount of noise in the denoiser's input
+        // image using techniques such as importance sampling and low-discrepancy
+        // random sequences.
+        _denoiser.bilateralFilterIterations = 5;
+    }
+   
+    {
+        MPSSVGF *svgf = [[MPSSVGF alloc] initWithDevice:_device];
+        svgf.channelCount = 3;
+        svgf.temporalWeighting = MPSTemporalWeightingExponentialMovingAverage;
+        svgf.temporalReprojectionBlendFactor = 0.1f;
+        _denoiserIrr = [[MPSSVGFDenoiser alloc] initWithSVGF:svgf textureAllocator:_textureAllocator];
+        _denoiserIrr.bilateralFilterIterations = 5;
+    }
+
     // Create the temporal antialiasing object
     _TAA = [[MPSTemporalAA alloc] initWithDevice:_device];
 }
@@ -260,6 +273,7 @@ typedef struct ThinGBuffer
     desc.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite | MTLTextureUsageRenderTarget;
     _rtReflectionMap = [_device newTextureWithDescriptor:desc];
     _rtShadingMap = [_device newTextureWithDescriptor:desc];
+    _rtIrradianceMap = [_device newTextureWithDescriptor:desc];
     
     desc.mipmapLevelCount = 1;
     //_rawColorMap = [_device newTextureWithDescriptor:desc];
@@ -1233,6 +1247,7 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
     [compEnc setTexture:outTexture atIndex:OutImageIndex];
     [compEnc setTexture:_thinGBuffer.positionTexture atIndex:ThinGBufferPositionIndex];
     [compEnc setTexture:_thinGBuffer.depthNormalTexture atIndex:ThinGBufferDirectionIndex];
+    [compEnc setTexture:_rtIrradianceMap atIndex:IrradianceMapIndex];
     [compEnc setTexture:_skyMap atIndex:AAPLSkyDomeTexture];
     
     // Bind the root of the argument buffer for the scene.
@@ -1416,6 +1431,19 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
                                                        motionVectorTexture:_thinGBuffer.motionVectorTexture
                                                         depthNormalTexture:_thinGBuffer.depthNormalTexture
                                                 previousDepthNormalTexture:_thinGBuffer.PrevDepthNormalTexture];
+        
+        id <MTLTexture> denoisedIrr = [_denoiserIrr encodeToCommandBuffer:commandBuffer
+                                                             sourceTexture:_rtIrradianceMap
+                                                       motionVectorTexture:_thinGBuffer.motionVectorTexture
+                                                        depthNormalTexture:_thinGBuffer.depthNormalTexture
+                                                previousDepthNormalTexture:_thinGBuffer.PrevDepthNormalTexture];
+        
+//        id <MTLTexture> denoisedTexture;// = [_textureAllocator textureWithPixelFormat:MTLPixelFormatRG16Float width:_size.width height:_size.height];
+//        id <MTLTexture> denoisedIrr;// = [_textureAllocator textureWithPixelFormat:MTLPixelFormatRGBA16Float width:_size.width height:_size.height];
+//        
+//        [_denoiser encodeToCommandBuffer:commandBuffer sourceTexture:_rtShadingMap destinationTexture:&denoisedTexture sourceTexture2:_rtIrradianceMap destinationTexture2:&denoisedIrr motionVectorTexture:_thinGBuffer.motionVectorTexture depthNormalTexture:_thinGBuffer.depthNormalTexture previousDepthNormalTexture:_thinGBuffer.PrevDepthNormalTexture];
+        
+        
         [commandBuffer popDebugGroup];
         
         // Encode the forward pass.
@@ -1448,12 +1476,14 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
         [renderEncoder setDepthStencilState:_depthState];
         [renderEncoder setFragmentTexture:_rtReflectionMap atIndex:AAPLTextureIndexReflections];
         [renderEncoder setFragmentTexture:denoisedTexture atIndex:AAPLTextureIndexGI];
+        [renderEncoder setFragmentTexture:denoisedIrr atIndex:AAPLTextureIndexIrrGI];
         [renderEncoder setFragmentTexture:_skyMap atIndex:AAPLSkyDomeTexture];
         
 
         [self encodeSceneRendering:renderEncoder];
         
         [_textureAllocator returnTexture:denoisedTexture];
+        [_textureAllocator returnTexture:denoisedIrr];
         [_textureAllocator returnTexture:_thinGBuffer.PrevDepthNormalTexture];
         
         /// Step4. 传统的背景渲染
@@ -1598,6 +1628,7 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
 - (void)mtkView:(nonnull MTKView *)view drawableSizeWillChange:(CGSize)size
 {
     [_denoiser releaseTemporaryTextures];
+    [_denoiserIrr releaseTemporaryTextures];
     [_textureAllocator reset];
     
     float aspect = size.width / (float)size.height;

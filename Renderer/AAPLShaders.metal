@@ -273,7 +273,8 @@ fragment float4 fragmentShader(
                     constant Scene*             pScene                [[ buffer(SceneIndex)]],
                     texture2d<float>            skydomeMap            [[ texture(AAPLSkyDomeTexture) ]],
                     texture2d<float>            rtReflections         [[ texture(AAPLTextureIndexReflections), function_constant(is_raytracing_enabled)]],
-                    texture2d<float>            rtShadings            [[ texture(AAPLTextureIndexGI), function_constant(is_raytracing_enabled)]])
+                    texture2d<float>            rtShadings            [[ texture(AAPLTextureIndexGI), function_constant(is_raytracing_enabled)]],
+                    texture2d<float>            rtIrrandiance         [[ texture(AAPLTextureIndexIrrGI), function_constant(is_raytracing_enabled)]])
 {
     constexpr sampler colorSampler(mip_filter::linear,
                                    mag_filter::linear,
@@ -308,12 +309,17 @@ fragment float4 fragmentShader(
         
         
         float4 gi = rtShadings.sample(colorSampler, screenTexcoord, level(0)).xyzw;
-        skylight *= gi.x;
+        //skylight *= gi.x;
         li *= gi.y;
+        
+        float4 irr = rtIrrandiance.sample(colorSampler, screenTexcoord, level(0)).xyzw;
+        skylight *= irr.xyz;
+        
     }
     params.metalness += cameraData.metallicBias;
     //float4 final_color = float4(skylight + computeSpecular(params) + li * computeDiffuse(params), 1.0f);
     float4 final_color = float4(skylight + li * params.nDotl, 1.0f);
+    //float4 final_color = float4(skylight, 1.0f);
     return final_color;
 }
 
@@ -369,6 +375,7 @@ using raytracing::instance_acceleration_structure;
 
 kernel void rtShading(
              texture2d< float, access::write >      outImage                [[texture(OutImageIndex)]],
+             texture2d< float, access::write >      outIrradiance                [[texture(IrradianceMapIndex)]],
              texture2d< float >                     positions               [[texture(ThinGBufferPositionIndex)]],
              texture2d< float >                     directions              [[texture(ThinGBufferDirectionIndex)]],
              texture2d< float >                     skydomeMap              [[texture(AAPLSkyDomeTexture)]],
@@ -385,6 +392,7 @@ kernel void rtShading(
     if ( tid.x < w&& tid.y < h )
     {
         float4 finalColor = float4( 0.0, 0.0, 0.0, 1.0 );
+        float4 finalIrradiance = float4( 0.0, 0.0, 0.0, 1.0 );
         if (is_null_instance_acceleration_structure(accelerationStructure))
         {
             finalColor = float4( 1.0, 0.0, 1.0, 1.0 );
@@ -414,18 +422,141 @@ kernel void rtShading(
                 auto intersection = inter.intersect( r, accelerationStructure, 0xFF );
                 if ( intersection.type == raytracing::intersection_type::triangle )
                 {
-                    // 打到了
+                    // 打到了, 取一次反弹
                     hit += 1.0;
+                    
+                    float2 bary2 = intersection.triangle_barycentric_coord;
+                    float3 bary3 = float3( 1.0 - (bary2.x + bary2.y), bary2.x, bary2.y );
+
+                    constant Instance& instance = pScene->instances[ intersection.instance_id ];
+                    constant Mesh* pMesh = &(pScene->meshes[instance.meshIndex]);
+                    constant Submesh & submesh = pMesh->submeshes[ intersection.geometry_id ];
+                    
+                    uint32_t i0, i1, i2;
+                    
+                    if ( submesh.shortIndexType )
+                    {
+                        constant uint16_t* pIndices = (constant uint16_t *)submesh.indices;
+                        i0 = pIndices[ intersection.primitive_id * 3 + 0];
+                        i1 = pIndices[ intersection.primitive_id * 3 + 1];
+                        i2 = pIndices[ intersection.primitive_id * 3 + 2];
+                    }
+                    else
+                    {
+                        constant uint32_t* pIndices = (constant uint32_t *)submesh.indices;
+                        i0 = pIndices[ intersection.primitive_id * 3 + 0];
+                        i1 = pIndices[ intersection.primitive_id * 3 + 1];
+                        i2 = pIndices[ intersection.primitive_id * 3 + 2];
+                    }
+
+                    float4x4 mv = instance.transform;
+                    half3x3 normalMx = half3x3(half3(mv.columns[0].xyz), half3(mv.columns[1].xyz), half3(mv.columns[2].xyz));
+
+                    // Normal
+
+                    half3 n0 = pMesh->generics[i0].normal.xyz;
+                    half3 n1 = pMesh->generics[i1].normal.xyz;
+                    half3 n2 = pMesh->generics[i2].normal.xyz;
+
+                    half3 n = (n0 * bary3.x) + (n1 * bary3.y) + (n2 * bary3.z);
+                    n = normalize(normalMx * n);
+
+                    // Texcoords
+
+                    float2 tc0 = pMesh->generics[i0].texcoord.xy;
+                    float2 tc1 = pMesh->generics[i1].texcoord.xy;
+                    float2 tc2 = pMesh->generics[i2].texcoord.xy;
+
+                    float2 texcoord = (tc0 * bary3.x) + (tc1 * bary3.y) + (tc2 * bary3.z);
+
+                    // Tangent
+
+                    half3 t0 = pMesh->generics[i0].tangent.xyz;
+                    half3 t1 = pMesh->generics[i1].tangent.xyz;
+                    half3 t2 = pMesh->generics[i2].tangent.xyz;
+
+                    half3 tangent = (t0 * bary3.x) + (t1 * bary3.y) + (t2 * bary3.z);
+                    tangent = normalMx * tangent;
+
+                    // Bitangent
+
+                    half3 bt0 = pMesh->generics[i0].bitangent.xyz;
+                    half3 bt1 = pMesh->generics[i1].bitangent.xyz;
+                    half3 bt2 = pMesh->generics[i2].bitangent.xyz;
+
+                    half3 bitangent = (bt0 * bary3.x) + (bt1 * bary3.y) + (bt2 * bary3.z);
+                    bitangent = normalMx * bitangent;
+
+                    // World Position:
+
+                    packed_float3 wp0 = pMesh->positions[i0].xyz;
+                    packed_float3 wp1 = pMesh->positions[i1].xyz;
+                    packed_float3 wp2 = pMesh->positions[i2].xyz;
+
+                    packed_float3 worldPosition = (wp0 * bary3.x) + (wp1 * bary3.y) + (wp2 * bary3.z);
+
+                    // Prepare structures for shading:
+                    
+                    ColorInOut colorIn = {};
+                    colorIn.worldPosition = worldPosition;
+                    colorIn.normal = float3(n);
+                    colorIn.tangent = float3(tangent);
+                    colorIn.bitangent = float3(bitangent);
+                    colorIn.texCoord = texcoord;
+
+                    texture2d< float > baseColorMap        = submesh.materials[AAPLTextureIndexBaseColor];        //colorMap
+                    texture2d< float > normalMap           = submesh.materials[AAPLTextureIndexNormal];           //normalMap
+                    texture2d< float > metallicMap         = submesh.materials[AAPLTextureIndexMetallic];         //metallicMap
+                    texture2d< float > roughnessMap        = submesh.materials[AAPLTextureIndexRoughness];        //roughnessMap
+                    texture2d< float > ambientOcclusionMap = submesh.materials[AAPLTextureIndexAmbientOcclusion]; //ambientOcclusionMap
+
+                    // For shading, adjust the camera position and the world position to
+                    // correctly account for reflections in reflections (noticeable on the
+                    // sphere's reflection environment map). This is because to correctly
+                    // sample the environment map, the shader needs to take into account that
+                    // the ray starts from the thin G-Buffer, not from the camera.
+                    AAPLCameraData cd( cameraData );
+                    cd.cameraPosition = r.origin;
+                    colorIn.worldPosition = r.origin + r.direction * intersection.distance;
+                    
+                    LightingParameters params = calculateParameters(colorIn,
+                                                                    cd,
+                                                                    lightData,
+                                                                    baseColorMap,
+                                                                    normalMap,
+                                                                    metallicMap,
+                                                                    roughnessMap,
+                                                                    ambientOcclusionMap,
+                                                                    skydomeMap);
+                    
+                    float ndotlbounce = dot(normal, r.direction);
+                    
+                    raytracing::ray rb;
+
+                    rb.origin = colorIn.worldPosition;
+                    rb.direction = normalize(lightData.directionalLightInvDirection);
+                    rb.min_distance = 0.1;
+                    rb.max_distance = FLT_MAX;
+                    
+                    auto intersectionb = inter.intersect( rb, accelerationStructure, 0xFF );
+                    if ( intersectionb.type == raytracing::intersection_type::none )
+                    {
+                        finalIrradiance += lightData.lightIntensity * 2.0 * params.nDotl / (float)skyRayCount;
+                    }
                 }
                 else if ( intersection.type == raytracing::intersection_type::none )
                 {
-                    // 没打到
-                    
+                    // 没打到, 取天光
+                    constexpr sampler linearFilterSampler(coord::normalized, address::clamp_to_edge, filter::linear);
+                    float3 c = equirectangularSample( r.direction, linearFilterSampler, skydomeMap ).rgb;
+                    finalIrradiance += float4( clamp( c, 0.0f, kMaxHDRValue ), 1.0f);
                 }
             }
             
             hit = 1.0 - hit / (float)skyRayCount;
             finalColor.x = hit;
+            
+            finalIrradiance = finalIrradiance / (float)skyRayCount;
             
             // lightcasting
             uint sunRayCount = 4;
@@ -456,6 +587,7 @@ kernel void rtShading(
             finalColor.y = shadowHit;
         }
         outImage.write( finalColor, tid );
+        outIrradiance.write( finalIrradiance, tid );
     }
 }
 
