@@ -1023,7 +1023,6 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
     AAPLLightData* pLightData = (AAPLLightData *)(_lightDataBuffer.contents);
     pLightData->directionalLightInvDirection = -vector_normalize((vector_float3){ 2, -6, 6 });
     pLightData->lightIntensity = 5.0f;
-    pLightData->frameCount = 0;
 }
 
 - (void)updateCameraState
@@ -1084,9 +1083,6 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
     pCameraData->cameraPosition = camPos;
     pCameraData->metallicBias = _metallicBias;
     pCameraData->roughnessBias = _roughnessBias;
-    
-    AAPLLightData* pLightData = (AAPLLightData *)(_lightDataBuffer.contents);
-    pLightData->frameCount += 1;
 }
 
 #pragma mark - Rendering

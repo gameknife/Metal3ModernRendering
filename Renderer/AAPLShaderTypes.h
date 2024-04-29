@@ -111,7 +111,6 @@ typedef struct
     // Per Light Properties
     vector_float3 directionalLightInvDirection;
     float lightIntensity;
-    int frameCount;
 
 } AAPLLightData;
 
