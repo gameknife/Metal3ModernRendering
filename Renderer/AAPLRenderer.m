@@ -144,47 +144,16 @@ typedef struct ThinGBuffer
     // throughout and across frames
     _textureAllocator = [[MPSSVGFDefaultTextureAllocator alloc] initWithDevice:_device];
     
-    {
-        // Create an MPSSVGF object. This object encodes the low-level
-        // kernels used by the MPSSVGFDenoiser object and allows the app
-        // to fine-tune the denoising process.
+    
         MPSSVGF *svgf = [[MPSSVGF alloc] initWithDevice:_device];
-        
-        // The app only denoises shadows which only have a single-channel,
-        // so set the channel count to 1. This is faster then denoising
-        // all 3 channels on an RGB image.
         svgf.channelCount = 3;
-        
-        // The app integrates samples over time while limiting ghosting artifacts,
-        // so set the temporal weighting to an exponential moving average and
-        // reduce the temporal blending factor
         svgf.temporalWeighting = MPSTemporalWeightingExponentialMovingAverage;
         svgf.temporalReprojectionBlendFactor = 0.1f;
-        
-        // Create the MPSSVGFDenoiser convenience object. Although you
-        // could call the low-level denoising kernels directly on the MPSSVGF
-        // object, for simplicity this sample lets the MPSSVGFDenoiser object
-        // take care of it.
         _denoiser = [[MPSSVGFDenoiser alloc] initWithSVGF:svgf textureAllocator:_textureAllocator];
-        
-        // Adjust the number of bilateral filter iterations used by the denoising
-        // process. More iterations will tend to produce better quality at the cost
-        // of performance, while fewer iterations will perform better but have
-        // lower quality. Five iterations is a good starting point. The best way to
-        // improve quality is to reduce the amount of noise in the denoiser's input
-        // image using techniques such as importance sampling and low-discrepancy
-        // random sequences.
-        _denoiser.bilateralFilterIterations = 5;
-    }
-   
-    {
-        MPSSVGF *svgf = [[MPSSVGF alloc] initWithDevice:_device];
-        svgf.channelCount = 3;
-        svgf.temporalWeighting = MPSTemporalWeightingExponentialMovingAverage;
-        svgf.temporalReprojectionBlendFactor = 0.1f;
+        _denoiser.bilateralFilterIterations = 2;
         _denoiserIrr = [[MPSSVGFDenoiser alloc] initWithSVGF:svgf textureAllocator:_textureAllocator];
-        _denoiserIrr.bilateralFilterIterations = 5;
-    }
+        _denoiserIrr.bilateralFilterIterations = 3;
+    
 
     // Create the temporal antialiasing object
     _TAA = [[MPSTemporalAA alloc] initWithDevice:_device];
@@ -228,10 +197,11 @@ typedef struct ThinGBuffer
         [self resizeRTReflectionMapTo:size];
         // ray-trace加速结构
         [self buildRTAccelerationStructures];
-        _cameraPanSpeedFactor = 0.1f;
+        _cameraAngle = 0.5 * M_PI;
+        _cameraPanSpeedFactor = 0.0f;
         _metallicBias = 0.0f;
         _roughnessBias = 0.0f;
-        _exposure = 1.0f;
+        _exposure = 1.5f;
         
         [self loadMPSSVGF];
 
@@ -420,8 +390,9 @@ typedef struct ThinGBuffer
             pipelineStateDescriptor.vertexDescriptor = _mtlSkyboxVertexDescriptor;
             pipelineStateDescriptor.vertexFunction = skyboxVertexFunction;
             pipelineStateDescriptor.fragmentFunction = skyboxFragmentFunction;
-            pipelineStateDescriptor.colorAttachments[0].pixelFormat = MTLPixelFormatRG11B10Float; //MTLPixelFormatBGRA8Unorm_sRGB;
+            pipelineStateDescriptor.colorAttachments[0].pixelFormat = MTLPixelFormatRG11B10Float;
             pipelineStateDescriptor.colorAttachments[1].pixelFormat = MTLPixelFormatInvalid;
+            pipelineStateDescriptor.colorAttachments[2].pixelFormat = MTLPixelFormatInvalid;
 
              _skyboxPipelineState = [_device newRenderPipelineStateWithDescriptor:pipelineStateDescriptor error:&error];
             NSAssert(_skyboxPipelineState, @"Failed to create Skybox Render Pipeline State: %@", error );
@@ -561,7 +532,7 @@ typedef struct ThinGBuffer
     MTLArgumentDescriptor* argumentDescriptor = [MTLArgumentDescriptor argumentDescriptor];
     argumentDescriptor.index = index;
     argumentDescriptor.dataType = dataType;
-    argumentDescriptor.access = MTLArgumentAccessReadOnly;
+    argumentDescriptor.access = MTLBindingAccessReadOnly;
     return argumentDescriptor;
 }
 
@@ -1035,7 +1006,7 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
     [self updateCameraState];
 
     AAPLLightData* pLightData = (AAPLLightData *)(_lightDataBuffer.contents);
-    pLightData->directionalLightInvDirection = -vector_normalize((vector_float3){ 2, -6, 6 });
+    pLightData->directionalLightInvDirection = -vector_normalize((vector_float3){ 0, -6, 6 });
     pLightData->lightIntensity = 5.0f;
 }
 
@@ -1047,24 +1018,24 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
     AAPLCameraData* pPrevCameraData = (AAPLCameraData *)_cameraDataBuffers[_cameraBufferIndex].contents;
     _cameraBufferIndex = ( _cameraBufferIndex + 1 ) % kMaxBuffersInFlight;
     
-    vector_float2 haltonSamples[] = {
-        vector2(0.5f, 0.333333333333f),
-        vector2(0.25f, 0.666666666667f),
-        vector2(0.75f, 0.111111111111f),
-        vector2(0.125f, 0.444444444444f),
-        vector2(0.625f, 0.777777777778f),
-        vector2(0.375f, 0.222222222222f),
-        vector2(0.875f, 0.555555555556f),
-        vector2(0.0625f, 0.888888888889f),
-        vector2(0.5625f, 0.037037037037f),
-        vector2(0.3125f, 0.37037037037f),
-        vector2(0.8125f, 0.703703703704f),
-        vector2(0.1875f, 0.148148148148f),
-        vector2(0.6875f, 0.481481481481f),
-        vector2(0.4375f, 0.814814814815f),
-        vector2(0.9375f, 0.259259259259f),
-        vector2(0.03125f, 0.592592592593f),
-    };
+//    vector_float2 haltonSamples[] = {
+//        vector2(0.5f, 0.333333333333f),
+//        vector2(0.25f, 0.666666666667f),
+//        vector2(0.75f, 0.111111111111f),
+//        vector2(0.125f, 0.444444444444f),
+//        vector2(0.625f, 0.777777777778f),
+//        vector2(0.375f, 0.222222222222f),
+//        vector2(0.875f, 0.555555555556f),
+//        vector2(0.0625f, 0.888888888889f),
+//        vector2(0.5625f, 0.037037037037f),
+//        vector2(0.3125f, 0.37037037037f),
+//        vector2(0.8125f, 0.703703703704f),
+//        vector2(0.1875f, 0.148148148148f),
+//        vector2(0.6875f, 0.481481481481f),
+//        vector2(0.4375f, 0.814814814815f),
+//        vector2(0.9375f, 0.259259259259f),
+//        vector2(0.03125f, 0.592592592593f),
+//    };
 
     // Update Projection Matrix
     simd_float2 jitter = vector2(0.0f, 0.0f);
@@ -1329,7 +1300,9 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
         // When ray tracing is in an enabled state, first render a thin G-Buffer
         // that contains position and reflection direction data. Then, dispatch a
         // compute kernel that ray traces mirror-like reflections from this data.
-
+        id <MTLTexture> denoisedTexture;
+        id <MTLTexture> denoisedIrr;
+        
         if ( _renderMode == RMMetalRaytracing || _renderMode == RMReflectionsOnly )
         {
             /// Step1. 全局Thin GBuffer，给CS使用
@@ -1392,7 +1365,7 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
             [commandBuffer encodeWaitForEvent:_accelerationStructureBuildEvent value:kInstanceAccelerationStructureBuild];
             
             // reflection
-            //[self executeCSProcess:commandBuffer inPSO:_rtReflectionPipeline outTexture:_rtReflectionMap label:@"光追反射"];
+            [self executeCSProcess:commandBuffer inPSO:_rtReflectionPipeline outTexture:_rtReflectionMap label:@"光追反射"];
             // shading
             [self executeCSProcess:commandBuffer inPSO:_rtShadingPipeline outTexture:_rtShadingMap label:@"光追天光遮蔽"];
             
@@ -1406,7 +1379,7 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
                 // that the GPU samples when reading the reflection in the accumulation pass.
 
                 [commandBuffer pushDebugGroup:@"Generate Reflection Mipmaps"];
-                const BOOL gaussianBlur = NO;
+                const BOOL gaussianBlur = YES;
                 if ( gaussianBlur )
                 {
                     [self generateGaussMipmapsForTexture:_rtReflectionMap commandBuffer:commandBuffer];
@@ -1419,32 +1392,27 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
                 }
                 [commandBuffer popDebugGroup];
             }
+            
+            [commandBuffer pushDebugGroup:@"MPS降噪"];
+            denoisedTexture = [_denoiser encodeToCommandBuffer:commandBuffer
+                                                                 sourceTexture:_rtShadingMap
+                                                           motionVectorTexture:_thinGBuffer.motionVectorTexture
+                                                            depthNormalTexture:_thinGBuffer.depthNormalTexture
+                                                    previousDepthNormalTexture:_thinGBuffer.PrevDepthNormalTexture];
+            
+            denoisedIrr = [_denoiserIrr encodeToCommandBuffer:commandBuffer
+                                                                 sourceTexture:_rtIrradianceMap
+                                                           motionVectorTexture:_thinGBuffer.motionVectorTexture
+                                                            depthNormalTexture:_thinGBuffer.depthNormalTexture
+                                                    previousDepthNormalTexture:_thinGBuffer.PrevDepthNormalTexture];
+            
+            [commandBuffer popDebugGroup];
+            
         }
 
         /// Step3. 常规的渲染pass
         /// 如果是传统渲染，这是第一步，就是简单的前向渲染
         /// 不过如果已经有了ThinGBuffer，这里其实可以直接再开一个CS，来作真正的DeferredShading
-        
-        [commandBuffer pushDebugGroup:@"MPS降噪"];
-        id <MTLTexture> denoisedTexture = [_denoiser encodeToCommandBuffer:commandBuffer
-                                                             sourceTexture:_rtShadingMap
-                                                       motionVectorTexture:_thinGBuffer.motionVectorTexture
-                                                        depthNormalTexture:_thinGBuffer.depthNormalTexture
-                                                previousDepthNormalTexture:_thinGBuffer.PrevDepthNormalTexture];
-        
-        id <MTLTexture> denoisedIrr = [_denoiserIrr encodeToCommandBuffer:commandBuffer
-                                                             sourceTexture:_rtIrradianceMap
-                                                       motionVectorTexture:_thinGBuffer.motionVectorTexture
-                                                        depthNormalTexture:_thinGBuffer.depthNormalTexture
-                                                previousDepthNormalTexture:_thinGBuffer.PrevDepthNormalTexture];
-        
-//        id <MTLTexture> denoisedTexture;// = [_textureAllocator textureWithPixelFormat:MTLPixelFormatRG16Float width:_size.width height:_size.height];
-//        id <MTLTexture> denoisedIrr;// = [_textureAllocator textureWithPixelFormat:MTLPixelFormatRGBA16Float width:_size.width height:_size.height];
-//        
-//        [_denoiser encodeToCommandBuffer:commandBuffer sourceTexture:_rtShadingMap destinationTexture:&denoisedTexture sourceTexture2:_rtIrradianceMap destinationTexture2:&denoisedIrr motionVectorTexture:_thinGBuffer.motionVectorTexture depthNormalTexture:_thinGBuffer.depthNormalTexture previousDepthNormalTexture:_thinGBuffer.PrevDepthNormalTexture];
-        
-        
-        [commandBuffer popDebugGroup];
         
         // Encode the forward pass.
         
@@ -1454,7 +1422,7 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
         id<MTLTexture> drawableTexture = rpd.colorAttachments[0].texture;
         rpd.colorAttachments[0].texture = compositeTexture;
         
-        [commandBuffer pushDebugGroup:@"Forward Scene Render"];
+        [commandBuffer pushDebugGroup:@"标准渲染"];
         id<MTLRenderCommandEncoder> renderEncoder = [commandBuffer renderCommandEncoderWithDescriptor:rpd];
         renderEncoder.label = @"ForwardPassRenderEncoder";
 
@@ -1474,21 +1442,27 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
         [renderEncoder setCullMode:MTLCullModeFront];
         [renderEncoder setFrontFacingWinding:MTLWindingClockwise];
         [renderEncoder setDepthStencilState:_depthState];
-        [renderEncoder setFragmentTexture:_rtReflectionMap atIndex:AAPLTextureIndexReflections];
-        [renderEncoder setFragmentTexture:denoisedTexture atIndex:AAPLTextureIndexGI];
-        [renderEncoder setFragmentTexture:denoisedIrr atIndex:AAPLTextureIndexIrrGI];
+        if ( _renderMode == RMMetalRaytracing || _renderMode == RMReflectionsOnly )
+        {
+            [renderEncoder setFragmentTexture:_rtReflectionMap atIndex:AAPLTextureIndexReflections];
+            [renderEncoder setFragmentTexture:denoisedTexture atIndex:AAPLTextureIndexGI];
+            [renderEncoder setFragmentTexture:denoisedIrr atIndex:AAPLTextureIndexIrrGI];
+        }
         [renderEncoder setFragmentTexture:_skyMap atIndex:AAPLSkyDomeTexture];
         
 
         [self encodeSceneRendering:renderEncoder];
         
-        [_textureAllocator returnTexture:denoisedTexture];
-        [_textureAllocator returnTexture:denoisedIrr];
-        [_textureAllocator returnTexture:_thinGBuffer.PrevDepthNormalTexture];
+        if ( _renderMode == RMMetalRaytracing || _renderMode == RMReflectionsOnly )
+        {
+            [_textureAllocator returnTexture:denoisedTexture];
+            [_textureAllocator returnTexture:denoisedIrr];
+            [_textureAllocator returnTexture:_thinGBuffer.PrevDepthNormalTexture];
+        }
         
         /// Step4. 传统的背景渲染
         // Encode the skybox rendering.
-        if(false)
+        if(true)
         {
             [renderEncoder setCullMode:MTLCullModeBack];
             [renderEncoder setRenderPipelineState:_skyboxPipelineState];
@@ -1549,57 +1523,20 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
             [_textureAllocator returnTexture:_rawColorMap];
         
         _rawColorMap = AATexture;
-
-        /// Step5. 后处理
-        if(false)
-        {
-            // Clamp values to the bloom threshold.
-            {
-                [commandBuffer pushDebugGroup:@"Bloom Threshold"];
-                MTLRenderPassDescriptor* rpd = [[MTLRenderPassDescriptor alloc] init];
-                rpd.colorAttachments[0].loadAction = MTLLoadActionDontCare;
-                rpd.colorAttachments[0].storeAction = MTLStoreActionStore;
-                rpd.colorAttachments[0].texture = _bloomThresholdMap;
-                
-                id<MTLRenderCommandEncoder> renderEncoder = [commandBuffer renderCommandEncoderWithDescriptor:rpd];
-                [renderEncoder pushDebugGroup:@"Postprocessing"];
-                [renderEncoder setRenderPipelineState:_bloomThresholdPipeline];
-                [renderEncoder setFragmentTexture:_rawColorMap atIndex:0];
-                
-                float threshold = 2.0f;
-                [renderEncoder setFragmentBytes:&threshold length:sizeof(float) atIndex:0];
-                [renderEncoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
-                [renderEncoder popDebugGroup];
-                [renderEncoder endEncoding];
-                [commandBuffer popDebugGroup];
-            }
-            
-            // Blur the bloom.
-            {
-                [commandBuffer pushDebugGroup:@"Bloom Blur"];
-                MPSImageGaussianBlur* blur = [[MPSImageGaussianBlur alloc] initWithDevice:_device sigma:5.0f];
-                [blur encodeToCommandBuffer:commandBuffer
-                              sourceTexture:_bloomThresholdMap
-                         destinationTexture:_bloomBlurMap];
-                [commandBuffer popDebugGroup];
-            }
-        }
-       
-        
+ 
         // Merge the postprocessing results with the scene rendering.
         {
-            [commandBuffer pushDebugGroup:@"Final Merge"];
+            [commandBuffer pushDebugGroup:@"合成阶段"];
             MTLRenderPassDescriptor* rpd = [[MTLRenderPassDescriptor alloc] init];
             rpd.colorAttachments[0].loadAction = MTLLoadActionDontCare;
             rpd.colorAttachments[0].storeAction = MTLStoreActionStore;
             rpd.colorAttachments[0].texture = drawableTexture;
             
             id<MTLRenderCommandEncoder> renderEncoder = [commandBuffer renderCommandEncoderWithDescriptor:rpd];
-            [renderEncoder pushDebugGroup:@"Postprocessing Merge"];
+            [renderEncoder pushDebugGroup:@"后处理曝光"];
             [renderEncoder setRenderPipelineState:_postMergePipeline];
             [renderEncoder setFragmentBytes:&_exposure length:sizeof(float) atIndex:0];
             [renderEncoder setFragmentTexture:_rawColorMap atIndex:0];
-            [renderEncoder setFragmentTexture:_bloomBlurMap atIndex:1];
             [renderEncoder drawPrimitives:MTLPrimitiveTypeTriangle
                               vertexStart:0
                               vertexCount:6];

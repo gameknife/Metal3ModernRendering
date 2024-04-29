@@ -154,7 +154,7 @@ LightingParameters calculateParameters(ColorInOut in,
 
     parameters.viewDir = normalize(cameraData.cameraPosition - float3(in.worldPosition));
 
-    parameters.roughness = max(roughnessMap.sample(linearSampler, in.texCoord.xy).x, 0.001f) * 0.8;
+    parameters.roughness = mix(0.01,1.0,roughnessMap.sample(linearSampler, in.texCoord.xy).x);
 
     parameters.metalness = max(metallicMap.sample(linearSampler, in.texCoord.xy).x, 0.1);
 
@@ -304,21 +304,22 @@ fragment float4 fragmentShader(
         uint8_t mipLevel = params.roughness * rtReflections.get_num_mip_levels();
         float3 reflectedColor = rtReflections.sample(colorSampler, screenTexcoord, level(mipLevel)).xyz;
 
-        float hasReflection = (dot( reflectedColor.rgb, float3(1,1,1) ) > 0.0);
-        params.irradiatedColor = mix(params.irradiatedColor, reflectedColor.rgb, hasReflection);
+        //float hasReflection = (dot( reflectedColor.rgb, float3(1,1,1) ) > 0.0);
+        //params.irradiatedColor = mix(params.irradiatedColor, reflectedColor.rgb, hasReflection);
         
         
         float4 gi = rtShadings.sample(colorSampler, screenTexcoord, level(0)).xyzw;
-        //skylight *= gi.x;
         li *= gi.y;
         
+        params.irradiatedColor = reflectedColor.rgb * reflectedColor.rgb * gi.x;
+        
         float4 irr = rtIrrandiance.sample(colorSampler, screenTexcoord, level(0)).xyzw;
-        skylight *= irr.xyz;
+        skylight *= irr.xyz * 2.0;
         
     }
     params.metalness += cameraData.metallicBias;
-    //float4 final_color = float4(skylight + computeSpecular(params) + li * computeDiffuse(params), 1.0f);
-    float4 final_color = float4(skylight + li * params.nDotl, 1.0f);
+    float4 final_color = float4(skylight * float3((params.baseColor) * (1.0 - params.metalness)) + computeSpecular(params) + li * computeDiffuse(params), 1.0f);
+    //float4 final_color = float4((skylight + li * params.nDotl) * mix(params.baseColor.xyz, dot(params.baseColor.xyz, float3(.33)), 0.8), 1.0f);
     //float4 final_color = float4(skylight, 1.0f);
     return final_color;
 }
@@ -404,21 +405,23 @@ kernel void rtShading(
             Loki rng = Loki(tid.x + 1, tid.y + 1, cameraData.frameIndex);
             
             // 构造一个在normal半球内的ray
-            uint skyRayCount = 8;
+            uint skyRayCount = 4;
             float hit = 0.0;
+            
+            raytracing::intersector<raytracing::instancing, raytracing::triangle_data> inter;
+            inter.assume_geometry_type( raytracing::geometry_type::triangle );
             
             for( uint i = 0; i < skyRayCount; ++i)
             {
                 raytracing::ray r;
 
+                // 这里需要构造一个基于法线的hemisphere来采样，并且引入重要性分布，使用hottonPattern
                 r.origin = position;
-                r.direction = normalize(float3(rng.rand() - 0.5,0.5,rng.rand() - 0.5));
+                r.direction = normalize(float3(rng.rand() - 0.5,rng.rand() - 0.5,rng.rand() - 0.5));
                 r.min_distance = 0.1;
-                r.max_distance = 20.0;
+                r.max_distance = FLT_MAX;
                 
-                
-                raytracing::intersector<raytracing::instancing, raytracing::triangle_data> inter;
-                inter.assume_geometry_type( raytracing::geometry_type::triangle );
+                // 在半球内发射射线
                 auto intersection = inter.intersect( r, accelerationStructure, 0xFF );
                 if ( intersection.type == raytracing::intersection_type::triangle )
                 {
@@ -529,8 +532,7 @@ kernel void rtShading(
                                                                     ambientOcclusionMap,
                                                                     skydomeMap);
                     
-                    float ndotlbounce = dot(normal, r.direction);
-                    
+                    // check if in shadow
                     raytracing::ray rb;
 
                     rb.origin = colorIn.worldPosition;
@@ -538,10 +540,13 @@ kernel void rtShading(
                     rb.min_distance = 0.1;
                     rb.max_distance = FLT_MAX;
                     
+                    float ndotl_bounce = saturate( dot(normal, r.direction) );
+                    
                     auto intersectionb = inter.intersect( rb, accelerationStructure, 0xFF );
                     if ( intersectionb.type == raytracing::intersection_type::none )
                     {
-                        finalIrradiance += lightData.lightIntensity * 2.0 * params.nDotl / (float)skyRayCount;
+                        // if not in shadow, accumlate the direct light as bounce, consider light atten
+                        finalIrradiance += lightData.lightIntensity * 0.5 * ndotl_bounce * params.nDotl / (float)skyRayCount;
                     }
                 }
                 else if ( intersection.type == raytracing::intersection_type::none )
@@ -549,14 +554,11 @@ kernel void rtShading(
                     // 没打到, 取天光
                     constexpr sampler linearFilterSampler(coord::normalized, address::clamp_to_edge, filter::linear);
                     float3 c = equirectangularSample( r.direction, linearFilterSampler, skydomeMap ).rgb;
-                    finalIrradiance += float4( clamp( c, 0.0f, kMaxHDRValue ), 1.0f);
+                    finalIrradiance += float4( clamp( c, 0.0f, kMaxHDRValue ), 1.0f) / (float)skyRayCount;
                 }
             }
             
-            hit = 1.0 - hit / (float)skyRayCount;
-            finalColor.x = hit;
-            
-            finalIrradiance = finalIrradiance / (float)skyRayCount;
+            finalColor.x = hit / (float)skyRayCount;
             
             // lightcasting
             uint sunRayCount = 4;
@@ -567,10 +569,8 @@ kernel void rtShading(
                 r.origin = position;
                 r.direction = normalize(lightData.directionalLightInvDirection + float3(rng.rand() - 0.5, 0.0, rng.rand() - 0.5) * 0.4);
                 r.min_distance = 0.1;
-                r.max_distance = 20.0;
+                r.max_distance = FLT_MAX;
                 
-                raytracing::intersector<raytracing::instancing, raytracing::triangle_data> inter;
-                inter.assume_geometry_type( raytracing::geometry_type::triangle );
                 auto intersection = inter.intersect( r, accelerationStructure, 0xFF );
                 if ( intersection.type == raytracing::intersection_type::triangle )
                 {
@@ -818,14 +818,11 @@ static float3 ToneMapACES(float3 x)
 
 fragment float4 fragmentPostprocessMerge( VertexInOut in [[stage_in]],
                                          constant float& exposure [[buffer(0)]],
-                                         texture2d< float > texture0 [[texture(0)]],
-                                         texture2d< float > texture1 [[texture(1)]])
+                                         texture2d< float > texture0 [[texture(0)]])
 {
     constexpr sampler s( address::repeat, min_filter::linear, mag_filter::linear );
-    constexpr sampler sam(min_filter::nearest, mag_filter::nearest, mip_filter::none);
-    float4 t0 = texture0.sample( sam, in.uv );
-    float4 t1 = texture1.sample( sam, in.uv );
-    float3 c = t0.rgb + t1.rgb;
+    float4 t0 = texture0.sample( s, in.uv );
+    float3 c = t0.rgb;
     c = ToneMapACES( c * exposure );
     return float4( c, 1.0f );
 }
