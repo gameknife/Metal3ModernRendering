@@ -293,7 +293,7 @@ fragment float4 fragmentShader(
                                                     pSubmesh->materials[AAPLTextureIndexRoughness],        //roughnessMap
                                                     pSubmesh->materials[AAPLTextureIndexAmbientOcclusion], //ambientOcclusionMap
                                                     skydomeMap);
-    float3 skylight = params.baseColor.xyz * params.ambientOcclusion * 0.1;
+    float3 skylight = params.ambientOcclusion * 0.1;
     float li = lightData.lightIntensity;
     params.roughness += cameraData.roughnessBias;
     clamp( params.roughness, 0.f, 1.0f );
@@ -313,7 +313,7 @@ fragment float4 fragmentShader(
     }
     params.metalness += cameraData.metallicBias;
     //float4 final_color = float4(skylight + computeSpecular(params) + li * computeDiffuse(params), 1.0f);
-    float4 final_color = float4(skylight + li * computeDiffuse(params), 1.0f);
+    float4 final_color = float4(skylight + li * params.nDotl, 1.0f);
     return final_color;
 }
 
