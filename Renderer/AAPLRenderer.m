@@ -15,6 +15,7 @@ The implemenation of the renderer class that performs Metal setup and per-frame 
 
 // Include the headers that share types between the C code here, which executes
 // Metal API commands, and the .metal files, which use the types as inputs to the shaders.
+#include <simd/simd.h>
 #import "AAPLShaderTypes.h"
 #import "AAPLArgumentBufferTypes.h"
 
@@ -117,7 +118,8 @@ typedef struct ThinGBuffer
     // Denoiser
     MPSSVGFDefaultTextureAllocator *_textureAllocator;
     MPSSVGFDenoiser *_denoiser;
-
+    MPSTemporalAA *_TAA;
+    
     ThinGBuffer _thinGBuffer;
 
     // Argument buffers.
@@ -172,7 +174,7 @@ typedef struct ThinGBuffer
     _denoiser.bilateralFilterIterations = 5;
     
     // Create the temporal antialiasing object
-    //_TAA = [[MPSTemporalAA alloc] initWithDevice:_device];
+    _TAA = [[MPSTemporalAA alloc] initWithDevice:_device];
 }
 
 - (nonnull instancetype)initWithMetalKitView:(nonnull MTKView *)view size:(CGSize)size
@@ -213,7 +215,7 @@ typedef struct ThinGBuffer
         [self resizeRTReflectionMapTo:size];
         // ray-trace加速结构
         [self buildRTAccelerationStructures];
-        _cameraPanSpeedFactor = 0.5f;
+        _cameraPanSpeedFactor = 0.1f;
         _metallicBias = 0.0f;
         _roughnessBias = 0.0f;
         _exposure = 1.0f;
@@ -248,31 +250,34 @@ typedef struct ThinGBuffer
 
 - (void)resizeRTReflectionMapTo:(CGSize)size
 {
+    _size = size;
+    
     MTLTextureDescriptor* desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRG11B10Float
                                                                                     width:size.width
                                                                                    height:size.height
                                                                                 mipmapped:YES];
+    
     desc.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite | MTLTextureUsageRenderTarget;
     _rtReflectionMap = [_device newTextureWithDescriptor:desc];
     _rtShadingMap = [_device newTextureWithDescriptor:desc];
     
     desc.mipmapLevelCount = 1;
-    _rawColorMap = [_device newTextureWithDescriptor:desc];
+    //_rawColorMap = [_device newTextureWithDescriptor:desc];
     _bloomThresholdMap = [_device newTextureWithDescriptor:desc];
     _bloomBlurMap = [_device newTextureWithDescriptor:desc];
 
     desc.pixelFormat = MTLPixelFormatRGBA16Float;
     desc.usage = MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget;
     _thinGBuffer.positionTexture = [_device newTextureWithDescriptor:desc];
-    _thinGBuffer.depthNormalTexture = [_device newTextureWithDescriptor:desc];
-    _thinGBuffer.motionVectorTexture = [_device newTextureWithDescriptor:desc];
+    _thinGBuffer.depthNormalTexture = [_textureAllocator textureWithPixelFormat:MTLPixelFormatRGBA16Float width:_size.width height:_size.height];
+    _thinGBuffer.motionVectorTexture = [_textureAllocator textureWithPixelFormat:MTLPixelFormatRG16Float width:_size.width height:_size.height];
     
     MTLHeapDescriptor* hd = [[MTLHeapDescriptor alloc] init];
     hd.size = size.width * size.height * 4 * 2 * 3;
     hd.storageMode = MTLStorageModePrivate;
     _rtMipmappingHeap = [_device newHeapWithDescriptor:hd];
     
-    _size = size;
+    
 }
 
 #pragma mark - Build Pipeline States
@@ -388,7 +393,7 @@ typedef struct ThinGBuffer
             pipelineStateDescriptor.fragmentFunction = gBufferFragmentFunction;
             pipelineStateDescriptor.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float;
             pipelineStateDescriptor.colorAttachments[1].pixelFormat = MTLPixelFormatRGBA16Float;
-            pipelineStateDescriptor.colorAttachments[2].pixelFormat = MTLPixelFormatRGBA16Float;
+            pipelineStateDescriptor.colorAttachments[2].pixelFormat = MTLPixelFormatRG16Float;
 
             _gbufferPipelineState = [_device newRenderPipelineStateWithDescriptor:pipelineStateDescriptor error:&error];
             NSAssert(_gbufferPipelineState, @"Failed to create GBuffer pipeline state: %@", error);
@@ -1016,7 +1021,7 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
     [self updateCameraState];
 
     AAPLLightData* pLightData = (AAPLLightData *)(_lightDataBuffer.contents);
-    pLightData->directionalLightInvDirection = -vector_normalize((vector_float3){ 0, -6, 6 });
+    pLightData->directionalLightInvDirection = -vector_normalize((vector_float3){ 2, -6, 6 });
     pLightData->lightIntensity = 5.0f;
     pLightData->frameCount = 0;
 }
@@ -1024,14 +1029,46 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
 - (void)updateCameraState
 {
     // Determine next safe slot:
-
+    
+    
+    AAPLCameraData* pPrevCameraData = (AAPLCameraData *)_cameraDataBuffers[_cameraBufferIndex].contents;
     _cameraBufferIndex = ( _cameraBufferIndex + 1 ) % kMaxBuffersInFlight;
+    
+    vector_float2 haltonSamples[] = {
+        vector2(0.5f, 0.333333333333f),
+        vector2(0.25f, 0.666666666667f),
+        vector2(0.75f, 0.111111111111f),
+        vector2(0.125f, 0.444444444444f),
+        vector2(0.625f, 0.777777777778f),
+        vector2(0.375f, 0.222222222222f),
+        vector2(0.875f, 0.555555555556f),
+        vector2(0.0625f, 0.888888888889f),
+        vector2(0.5625f, 0.037037037037f),
+        vector2(0.3125f, 0.37037037037f),
+        vector2(0.8125f, 0.703703703704f),
+        vector2(0.1875f, 0.148148148148f),
+        vector2(0.6875f, 0.481481481481f),
+        vector2(0.4375f, 0.814814814815f),
+        vector2(0.9375f, 0.259259259259f),
+        vector2(0.03125f, 0.592592592593f),
+    };
 
     // Update Projection Matrix
+    simd_float2 jitter = vector2(0.0f, 0.0f);
+    //simd_float2 jitter = (haltonSamples[_frameCount % 16] * 2.0f - 1.0f) / vector2((float)_size.width, (float)_size.height);
     AAPLCameraData* pCameraData = (AAPLCameraData *)_cameraDataBuffers[_cameraBufferIndex].contents;
-    pCameraData->prevProjectionMatrix = pCameraData->projectionMatrix;
-    pCameraData->projectionMatrix = _projectionMatrix;
-
+    
+    matrix_float4x4 projectionMatrix = _projectionMatrix;
+    projectionMatrix.columns[2][0] += jitter.x;
+    projectionMatrix.columns[2][1] += jitter.y;
+    
+    pCameraData->prevProjectionMatrix = pPrevCameraData->projectionMatrix;
+    pCameraData->projectionMatrix = projectionMatrix;
+    pCameraData->prev_jitter = pPrevCameraData->jitter;
+    pCameraData->jitter = jitter * vector2(0.5f, -0.5f);
+    pCameraData->width = _size.width;
+    pCameraData->height = _size.height;
+    pCameraData->frameIndex = _frameCount;
     // Update Camera Position (and View Matrix):
 
     vector_float3 camPos = (vector_float3){ cosf( _cameraAngle ) * 10.0f, 5, sinf(_cameraAngle) * 22.5f };
@@ -1041,9 +1078,9 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
         _cameraAngle -= (2 * M_PI);
     }
 
-    pCameraData->prevViewMatrix = pCameraData->viewMatrix;
+    pCameraData->prevViewMatrix = pPrevCameraData->viewMatrix;
     pCameraData->viewMatrix = matrix4x4_translation( -camPos );
-    pCameraData->prevCameraPosition = pCameraData->cameraPosition;
+    pCameraData->prevCameraPosition = pPrevCameraData->cameraPosition;
     pCameraData->cameraPosition = camPos;
     pCameraData->metallicBias = _metallicBias;
     pCameraData->roughnessBias = _roughnessBias;
@@ -1301,7 +1338,7 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
             gbufferPass.colorAttachments[1].texture = depthNormalTexture;
             
             gbufferPass.colorAttachments[2].loadAction = MTLLoadActionClear;
-            gbufferPass.colorAttachments[2].clearColor = MTLClearColorMake(0, 0, 0, 1);
+            gbufferPass.colorAttachments[2].clearColor = MTLClearColorMake(0, 0, 0, 0);
             gbufferPass.colorAttachments[2].storeAction = MTLStoreActionStore;
             gbufferPass.colorAttachments[2].texture = _thinGBuffer.motionVectorTexture;
             
@@ -1386,9 +1423,12 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
         [commandBuffer popDebugGroup];
         
         // Encode the forward pass.
+        
+        id <MTLTexture> compositeTexture = [_textureAllocator textureWithPixelFormat:MTLPixelFormatRG11B10Float width:_size.width height:_size.height];
+        
         MTLRenderPassDescriptor* rpd = view.currentRenderPassDescriptor;
         id<MTLTexture> drawableTexture = rpd.colorAttachments[0].texture;
-        rpd.colorAttachments[0].texture = _rawColorMap;
+        rpd.colorAttachments[0].texture = compositeTexture;
         
         [commandBuffer pushDebugGroup:@"Forward Scene Render"];
         id<MTLRenderCommandEncoder> renderEncoder = [commandBuffer renderCommandEncoderWithDescriptor:rpd];
@@ -1413,13 +1453,12 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
         [renderEncoder setFragmentTexture:_rtReflectionMap atIndex:AAPLTextureIndexReflections];
         [renderEncoder setFragmentTexture:denoisedTexture atIndex:AAPLTextureIndexGI];
         [renderEncoder setFragmentTexture:_skyMap atIndex:AAPLSkyDomeTexture];
+        
 
         [self encodeSceneRendering:renderEncoder];
         
         [_textureAllocator returnTexture:denoisedTexture];
-        [_textureAllocator returnTexture:_thinGBuffer.depthNormalTexture];
-        
-        _thinGBuffer.depthNormalTexture = _thinGBuffer.PrevDepthNormalTexture;
+        [_textureAllocator returnTexture:_thinGBuffer.PrevDepthNormalTexture];
         
         /// Step4. 传统的背景渲染
         // Encode the skybox rendering.
@@ -1460,6 +1499,30 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
         [renderEncoder endEncoding];
         [commandBuffer popDebugGroup];
         
+        id <MTLTexture> AATexture = compositeTexture;
+        if(true)
+        {
+            [commandBuffer pushDebugGroup:@"TAA"];
+            
+            if (_frameCount > 0) {
+                AATexture = [_textureAllocator textureWithPixelFormat:MTLPixelFormatRG11B10Float width:_size.width height:_size.height];
+            
+                [_TAA encodeToCommandBuffer:commandBuffer
+                              sourceTexture:compositeTexture
+                            previousTexture:_rawColorMap
+                         destinationTexture:AATexture
+                        motionVectorTexture:_thinGBuffer.motionVectorTexture
+                               depthTexture:_thinGBuffer.depthNormalTexture];
+                
+                [_textureAllocator returnTexture:compositeTexture];
+            }
+            
+            [commandBuffer popDebugGroup];
+        }
+        if(_rawColorMap)
+            [_textureAllocator returnTexture:_rawColorMap];
+        
+        _rawColorMap = AATexture;
 
         /// Step5. 后处理
         if(false)
@@ -1545,7 +1608,7 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
     _projectionMatrix = [self projectionMatrixWithAspect:aspect];
 
     // The passed-in size is already in backing coordinates.
-    [self resizeRTReflectionMapTo:view.bounds.size];
+    [self resizeRTReflectionMapTo:size];
     
     _frameCount = 0;
 }

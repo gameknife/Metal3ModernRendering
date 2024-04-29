@@ -21,6 +21,7 @@ constant float kMaxHDRValue = 500.0f;
 typedef struct
 {
     float4 position [[position]];
+    float4 currPosition;
     float4 prevPosition;
     float3 viewPosition;
     float3 ndcpos;
@@ -229,6 +230,7 @@ vertex ColorInOut vertexShader(Vertex in [[stage_in]],
 
     float4 position = float4(in.position, 1.0);
     out.position = cameraData.projectionMatrix * cameraData.viewMatrix * instanceTransform.modelViewMatrix * position;
+    out.currPosition = out.position;
     out.prevPosition = cameraData.prevProjectionMatrix * cameraData.prevViewMatrix * instanceTransform.modelViewMatrix * position;
     out.viewPosition = (cameraData.viewMatrix * instanceTransform.modelViewMatrix * position).xyz;
     out.ndcpos = out.position.xyz/out.position.w;
@@ -255,8 +257,9 @@ vertex ColorInOut vertexShader(Vertex in [[stage_in]],
 
 float2 calculateScreenCoord( float3 ndcpos )
 {
-    float2 screenTexcoord = (ndcpos.xy) * 0.5 + float2(0.5);
-    screenTexcoord.y = 1.0 - screenTexcoord.y;
+    //float2 screenTexcoord = (ndcpos.xy) * 0.5 + float2(0.5);
+    //screenTexcoord.y = 1.0 - screenTexcoord.y;
+    float2 screenTexcoord = (ndcpos.xy) * float2(0.5f, -0.5f) + float2(0.5f,0.5f);
     return screenTexcoord;
 }
 
@@ -305,7 +308,7 @@ fragment float4 fragmentShader(
         
         
         float4 gi = rtShadings.sample(colorSampler, screenTexcoord, level(0)).xyzw;
-        skylight *= sqrt(gi.x);
+        skylight *= gi.x;
         li *= gi.y;
     }
     params.metalness += cameraData.metallicBias;
@@ -327,31 +330,34 @@ struct ThinGBufferOut
 {
     float4 position [[color(0)]];
     float4 direction [[color(1)]];
-    float4 motionVector [[color(2)]];
+    float2 motionVector [[color(2)]];
 };
 
-fragment ThinGBufferOut gBufferFragmentShader(ColorInOut in [[stage_in]])
+fragment ThinGBufferOut gBufferFragmentShader(ColorInOut in [[stage_in]],
+                                              constant AAPLCameraData&    cameraData            [[ buffer(BufferIndexCameraData) ]])
 {
     ThinGBufferOut out;
 
     out.position = float4(in.worldPosition, 1.0);
-    // replace with normal, reflection move to the cs
-    // out.direction = float4(in.r, 0.0);
-    //out.direction = float4(in.normal, 0.0);
-    
-    // Map current pixel location to 0..1
-    //float2 uv = in.position.xy / float2(1280, 720);
-    float2 uv = in.position.xy / in.position.w * float2(0.5f, -0.5f) + 0.5f;
-    
-    // Unproject the position from the previous frame then transform it from
-    // NDC space to 0..1
-    float2 prevUV = in.prevPosition.xy / in.prevPosition.w * float2(0.5f, -0.5f) + 0.5f;
-    
-
+  
+    float2 motionVector = 0.0f;
+    if (cameraData.frameIndex > 0) {
+        //float2 uv = in.position.xy / float2(cameraData.width, cameraData.height);
+        float2 uv = in.currPosition.xy / in.currPosition.w * float2(0.5f, -0.5f) + float2(0.5f,0.5f);
+        
+        // Unproject the position from the previous frame then transform it from
+        // NDC space to 0..1
+        float2 prevUV = in.prevPosition.xy / in.prevPosition.w * float2(0.5f, -0.5f) + float2(0.5f,0.5f);
+        
+        uv -= cameraData.jitter;
+        prevUV -= cameraData.prev_jitter;
+        
+        motionVector = (uv - prevUV);
+    }
     
     // Then the motion vector is simply the difference between the two
     out.direction = float4(length(in.viewPosition), in.normal);
-    out.motionVector = float4(uv - prevUV, 0, 0);
+    out.motionVector = motionVector;
     
     return out;
 }
@@ -387,7 +393,7 @@ kernel void rtShading(
         {
             auto position = positions.read(tid).xyz;
             auto normal = directions.read(tid).yzw;
-            Loki rng = Loki(tid.x + 1, tid.y + 1, 0);
+            Loki rng = Loki(tid.x + 1, tid.y + 1, cameraData.frameIndex);
             
             // 构造一个在normal半球内的ray
             uint skyRayCount = 8;
@@ -422,13 +428,13 @@ kernel void rtShading(
             finalColor.x = hit;
             
             // lightcasting
-            uint sunRayCount = 8;
+            uint sunRayCount = 4;
             float shadowHit = 0;
             for( uint i = 0; i < sunRayCount; ++i)
             {
                 raytracing::ray r;
                 r.origin = position;
-                r.direction = normalize(lightData.directionalLightInvDirection + float3(rng.rand() - 0.5, 0.0, rng.rand() - 0.5) * 0.5);
+                r.direction = normalize(lightData.directionalLightInvDirection + float3(rng.rand() - 0.5, 0.0, rng.rand() - 0.5) * 0.4);
                 r.min_distance = 0.1;
                 r.max_distance = 20.0;
                 
@@ -684,8 +690,9 @@ fragment float4 fragmentPostprocessMerge( VertexInOut in [[stage_in]],
                                          texture2d< float > texture1 [[texture(1)]])
 {
     constexpr sampler s( address::repeat, min_filter::linear, mag_filter::linear );
-    float4 t0 = texture0.sample( s, in.uv );
-    float4 t1 = texture1.sample( s, in.uv );
+    constexpr sampler sam(min_filter::nearest, mag_filter::nearest, mip_filter::none);
+    float4 t0 = texture0.sample( sam, in.uv );
+    float4 t1 = texture1.sample( sam, in.uv );
     float3 c = t0.rgb + t1.rgb;
     c = ToneMapACES( c * exposure );
     return float4( c, 1.0f );
