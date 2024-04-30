@@ -559,7 +559,109 @@ kernel void rtShading(
     }
 }
 
+kernel void rtBounce(
+             texture2d< float, access::write >      outImage                [[texture(OutImageIndex)]],
+             texture2d< float >                     irradiance              [[texture(IrradianceMapIndex)]],
+             texture2d< float >                     positions               [[texture(ThinGBufferPositionIndex)]],
+             texture2d< float >                     directions              [[texture(ThinGBufferDirectionIndex)]],
+             constant AAPLInstanceTransform*        instanceTransforms      [[buffer(BufferIndexInstanceTransforms)]],
+             constant AAPLCameraData&               cameraData              [[buffer(BufferIndexCameraData)]],
+             constant AAPLLightData&                lightData               [[buffer(BufferIndexLightData)]],
+             constant Scene*                        pScene                  [[buffer(SceneIndex)]],
+             instance_acceleration_structure        accelerationStructure   [[buffer(AccelerationStructureIndex)]],
+             uint2 tid [[thread_position_in_grid]])
+{
 
+    uint w = outImage.get_width();
+    uint h = outImage.get_height();
+    if ( tid.x < w&& tid.y < h )
+    {
+        float4 finalColor = float4( 0.0, 0.0, 0.0, 1.0 );
+        float4 finalIrradiance = float4( 0.0, 0.0, 0.0, 1.0 );
+        if (is_null_instance_acceleration_structure(accelerationStructure))
+        {
+            finalColor = float4( 1.0, 0.0, 1.0, 1.0 );
+        }
+        else
+        {
+            auto position = positions.read(tid).xyz;
+            auto normal = directions.read(tid).yzw;
+            Loki rng = Loki(tid.x + 1, tid.y + 1, cameraData.frameIndex);
+            
+            // 构造一个在normal半球内的ray
+            uint skyRayCount = 4;
+
+            raytracing::intersector<raytracing::instancing, raytracing::triangle_data> inter;
+            inter.assume_geometry_type( raytracing::geometry_type::triangle );
+            
+            for( uint i = 0; i < skyRayCount; ++i)
+            {
+                raytracing::ray r;
+
+                // 这里需要构造一个基于法线的hemisphere来采样，并且引入重要性分布，使用hottonPattern
+                r.origin = position;
+                r.direction = normalize(float3(rng.rand() - 0.5,rng.rand() - 0.5,rng.rand() - 0.5));
+                r.min_distance = 0.1;
+                r.max_distance = FLT_MAX;
+                
+                // 在半球内发射射线
+                auto intersection = inter.intersect( r, accelerationStructure, 0xFF );
+                if ( intersection.type == raytracing::intersection_type::triangle )
+                {
+                    // 打到了, 从上一次的反弹结果取颜色
+                    auto worldPosition = r.origin + r.direction * intersection.distance;
+                    
+                    // 从worldPosition计算出采样坐标
+                    auto hpos = cameraData.projectionMatrix * cameraData.viewMatrix * float4(worldPosition, 1.0);
+                    auto screenTexcoord = calculateScreenCoord(hpos);
+                    
+                    constexpr sampler colorSampler(mip_filter::linear,
+                                                   mag_filter::linear,
+                                                   min_filter::linear);
+                    float4 gi = irradiance.sample(colorSampler, screenTexcoord).xyzw * 0.5;// 衰减为0.5
+                    
+                    finalIrradiance += gi / (float)skyRayCount;
+                }
+               
+            }
+        }
+        // combine with first bounce here
+        float4 firstbounce = irradiance.read(tid);
+        outImage.write( firstbounce + finalIrradiance, tid );
+    }
+}
+
+
+kernel void rtCombine(
+             texture2d< float, access::write >      outImage                [[texture(OutImageIndex)]],
+             texture2d< float >                     irradiance              [[texture(IrradianceMapIndex)]],
+             texture2d< float >                     positions               [[texture(ThinGBufferPositionIndex)]],
+             texture2d< float >                     directions              [[texture(ThinGBufferDirectionIndex)]],
+             constant AAPLInstanceTransform*        instanceTransforms      [[buffer(BufferIndexInstanceTransforms)]],
+             constant AAPLCameraData&               cameraData              [[buffer(BufferIndexCameraData)]],
+             constant AAPLLightData&                lightData               [[buffer(BufferIndexLightData)]],
+             constant Scene*                        pScene                  [[buffer(SceneIndex)]],
+             instance_acceleration_structure        accelerationStructure   [[buffer(AccelerationStructureIndex)]],
+             uint2 tid [[thread_position_in_grid]])
+{
+
+    uint w = outImage.get_width();
+    uint h = outImage.get_height();
+    if ( tid.x < w&& tid.y < h )
+    {
+        float4 finalColor = float4( 0.0, 0.0, 0.0, 1.0 );
+        float4 finalIrradiance = float4( 0.0, 0.0, 0.0, 1.0 );
+                    
+//        constexpr sampler colorSampler(mip_filter::linear,
+//                                       mag_filter::linear,
+//                                       min_filter::linear);
+//        float4 gi = irradiance.sample(colorSampler, screenTexcoord).xyzw * 0.1;// 衰减为0.2
+//        
+//        finalIrradiance += gi / (float)skyRayCount;
+
+        outImage.write( finalIrradiance, tid );
+    }
+}
 kernel void rtReflection(
              texture2d< float, access::write >      outImage                [[texture(OutImageIndex)]],
              texture2d< float >                     positions               [[texture(ThinGBufferPositionIndex)]],

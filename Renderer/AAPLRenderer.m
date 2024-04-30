@@ -103,11 +103,16 @@ typedef struct ThinGBuffer
     id<MTLHeap> _rtMipmappingHeap;
     id<MTLRenderPipelineState> _rtMipmapPipeline;
     
-    // Bindless DeferredShading
+    // First Bounce, Screen Idependent
     id<MTLTexture> _rtShadingMap;
     id<MTLTexture> _rtIrradianceMap;
     id<MTLFunction> _rtShadingFunction;
     id<MTLComputePipelineState> _rtShadingPipeline;
+    
+    // 2nd Bounce, Screen Relative
+    id<MTLTexture> _rtBounceMap;
+    id<MTLFunction> _rtBounceFunction;
+    id<MTLComputePipelineState> _rtBouncePipeline;
     
     // Postprocessing pipelines.
     id<MTLRenderPipelineState> _bloomThresholdPipeline;
@@ -248,6 +253,7 @@ typedef struct ThinGBuffer
     _rtReflectionMap = [_device newTextureWithDescriptor:desc];
     _rtShadingMap = [_device newTextureWithDescriptor:desc];
     _rtIrradianceMap = [_device newTextureWithDescriptor:desc];
+    _rtBounceMap = [_device newTextureWithDescriptor:desc];
     
     desc.mipmapLevelCount = 1;
     //_rawColorMap = [_device newTextureWithDescriptor:desc];
@@ -404,6 +410,10 @@ typedef struct ThinGBuffer
         _rtShadingFunction = [defaultLibrary newFunctionWithName:@"rtShading"];
         _rtShadingPipeline = [_device newComputePipelineStateWithFunction:_rtShadingFunction error:&error];
         NSAssert(_rtShadingPipeline, @"Failed to create RT shading compute pipeline state: %@", error);
+        
+        _rtBounceFunction = [defaultLibrary newFunctionWithName:@"rtBounce"];
+        _rtBouncePipeline = [_device newComputePipelineStateWithFunction:_rtBounceFunction error:&error];
+        NSAssert(_rtBouncePipeline, @"Failed to create RT shading compute pipeline state: %@", error);
         
         _renderMode = RMMetalRaytracing;
     }
@@ -1296,7 +1306,7 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
         id <MTLTexture> denoisedTexture;
         id <MTLTexture> denoisedIrr;
         
-        if ( _renderMode == RMMetalRaytracing || _renderMode == RMReflectionsOnly )
+        if ( _renderMode > 0  )
         {
             /// Step1. 全局Thin GBuffer，给CS使用
             ///
@@ -1360,7 +1370,9 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
             // reflection
             if(_renderMode == RMReflectionsOnly ) [self executeCSProcess:commandBuffer inPSO:_rtReflectionPipeline outTexture:_rtReflectionMap label:@"光追反射"];
             // shading
-            [self executeCSProcess:commandBuffer inPSO:_rtShadingPipeline outTexture:_rtShadingMap label:@"光追天光遮蔽"];
+            [self executeCSProcess:commandBuffer inPSO:_rtShadingPipeline outTexture:_rtShadingMap label:@"光追一次反弹"];
+            
+            [self executeCSProcess:commandBuffer inPSO:_rtBouncePipeline outTexture:_rtBounceMap label:@"光追二次反弹"];
             
             [commandBuffer popDebugGroup];
             
@@ -1387,17 +1399,32 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
             }
             
             [commandBuffer pushDebugGroup:@"MPS降噪"];
+            
             denoisedTexture = [_denoiser encodeToCommandBuffer:commandBuffer
                                                                  sourceTexture:_rtShadingMap
                                                            motionVectorTexture:_thinGBuffer.motionVectorTexture
                                                             depthNormalTexture:_thinGBuffer.depthNormalTexture
                                                     previousDepthNormalTexture:_thinGBuffer.PrevDepthNormalTexture];
             
-            denoisedIrr = [_denoiserIrr encodeToCommandBuffer:commandBuffer
-                                                                 sourceTexture:_rtIrradianceMap
-                                                           motionVectorTexture:_thinGBuffer.motionVectorTexture
-                                                            depthNormalTexture:_thinGBuffer.depthNormalTexture
-                                                    previousDepthNormalTexture:_thinGBuffer.PrevDepthNormalTexture];
+            if( _renderMode == RMMetalRaytracing )
+            {
+                denoisedIrr = [_denoiserIrr encodeToCommandBuffer:commandBuffer
+                                                                     sourceTexture:_rtIrradianceMap
+                                                               motionVectorTexture:_thinGBuffer.motionVectorTexture
+                                                                depthNormalTexture:_thinGBuffer.depthNormalTexture
+                                                        previousDepthNormalTexture:_thinGBuffer.PrevDepthNormalTexture];
+            }
+            else if(_renderMode == RMMetalRaytracing2 )
+            {
+                denoisedIrr = [_denoiserIrr encodeToCommandBuffer:commandBuffer
+                                                                     sourceTexture:_rtBounceMap
+                                                               motionVectorTexture:_thinGBuffer.motionVectorTexture
+                                                                depthNormalTexture:_thinGBuffer.depthNormalTexture
+                                                        previousDepthNormalTexture:_thinGBuffer.PrevDepthNormalTexture];
+            }
+
+            
+
             
             [commandBuffer popDebugGroup];
             
@@ -1419,7 +1446,7 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
         id<MTLRenderCommandEncoder> renderEncoder = [commandBuffer renderCommandEncoderWithDescriptor:rpd];
         renderEncoder.label = @"ForwardPassRenderEncoder";
 
-        if ( _renderMode == RMMetalRaytracing )
+        if ( _renderMode == RMMetalRaytracing || _renderMode == RMMetalRaytracing2 )
         {
             [renderEncoder setRenderPipelineState:_pipelineState];
         }
@@ -1435,7 +1462,7 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
         [renderEncoder setCullMode:MTLCullModeFront];
         [renderEncoder setFrontFacingWinding:MTLWindingClockwise];
         [renderEncoder setDepthStencilState:_depthState];
-        if ( _renderMode == RMMetalRaytracing || _renderMode == RMReflectionsOnly )
+        if ( _renderMode > 0 )
         {
             [renderEncoder setFragmentTexture:_rtReflectionMap atIndex:AAPLTextureIndexReflections];
             [renderEncoder setFragmentTexture:denoisedTexture atIndex:AAPLTextureIndexGI];
@@ -1446,7 +1473,7 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
 
         [self encodeSceneRendering:renderEncoder];
         
-        if ( _renderMode == RMMetalRaytracing || _renderMode == RMReflectionsOnly )
+        if ( _renderMode > 0 )
         {
             [_textureAllocator returnTexture:denoisedTexture];
             [_textureAllocator returnTexture:denoisedIrr];

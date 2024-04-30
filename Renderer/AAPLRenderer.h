@@ -11,7 +11,8 @@ typedef NS_ENUM( uint8_t, RenderMode )
 {
     RMNoRaytracing = 0,
     RMMetalRaytracing = 1,
-    RMReflectionsOnly = 2
+    RMMetalRaytracing2 = 2,
+    RMReflectionsOnly = 3
 };
 
 // The platform-independent renderer class. Implements the MTKViewDelegate protocol, which
