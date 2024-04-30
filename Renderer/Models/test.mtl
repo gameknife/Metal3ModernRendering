@@ -15,4 +15,4 @@ anisor 0.000000
 map_Kd gray
 map_metallic black
 map_roughness white
-map_bump flat
+map_bump  BodyNormalMap

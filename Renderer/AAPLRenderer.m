@@ -293,16 +293,6 @@ typedef struct ThinGBuffer
     _mtlVertexDescriptor.attributes[AAPLVertexAttributeNormal].offset = 8;
     _mtlVertexDescriptor.attributes[AAPLVertexAttributeNormal].bufferIndex = AAPLBufferIndexMeshGenerics;
 
-    // Tangents
-    _mtlVertexDescriptor.attributes[AAPLVertexAttributeTangent].format = MTLVertexFormatHalf4;
-    _mtlVertexDescriptor.attributes[AAPLVertexAttributeTangent].offset = 16;
-    _mtlVertexDescriptor.attributes[AAPLVertexAttributeTangent].bufferIndex = AAPLBufferIndexMeshGenerics;
-
-    // Bitangents
-    _mtlVertexDescriptor.attributes[AAPLVertexAttributeBitangent].format = MTLVertexFormatHalf4;
-    _mtlVertexDescriptor.attributes[AAPLVertexAttributeBitangent].offset = 24;
-    _mtlVertexDescriptor.attributes[AAPLVertexAttributeBitangent].bufferIndex = AAPLBufferIndexMeshGenerics;
-
     // Position Buffer Layout
     _mtlVertexDescriptor.layouts[AAPLBufferIndexMeshPositions].stride = 12;
     _mtlVertexDescriptor.layouts[AAPLBufferIndexMeshPositions].stepRate = 1;
@@ -368,7 +358,7 @@ typedef struct ThinGBuffer
         }
 
         {
-            pipelineStateDescriptor.fragmentFunction = [defaultLibrary newFunctionWithName:@"reflectionShader"];
+            pipelineStateDescriptor.fragmentFunction = [defaultLibrary newFunctionWithName:@"irradianceShader"];
             pipelineStateDescriptor.label = @"Reflection Viewer Pipeline";
 
             _pipelineStateReflOnly = [_device newRenderPipelineStateWithDescriptor:pipelineStateDescriptor error:&error];
@@ -493,8 +483,6 @@ typedef struct ThinGBuffer
     modelIOVertexDescriptor.attributes[AAPLVertexAttributePosition].name  = MDLVertexAttributePosition;
     modelIOVertexDescriptor.attributes[AAPLVertexAttributeTexcoord].name  = MDLVertexAttributeTextureCoordinate;
     modelIOVertexDescriptor.attributes[AAPLVertexAttributeNormal].name    = MDLVertexAttributeNormal;
-    modelIOVertexDescriptor.attributes[AAPLVertexAttributeTangent].name   = MDLVertexAttributeTangent;
-    modelIOVertexDescriptor.attributes[AAPLVertexAttributeBitangent].name = MDLVertexAttributeBitangent;
 
     NSURL *modelFileURL = [[NSBundle mainBundle] URLForResource:@"Models/test.obj"
                                                   withExtension:nil];
@@ -1578,6 +1566,7 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
 
     // The passed-in size is already in backing coordinates.
     [self resizeRTReflectionMapTo:view.bounds.size];
+    //[self resizeRTReflectionMapTo:size];
     
     _frameCount = 0;
 }

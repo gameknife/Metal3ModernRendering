@@ -26,8 +26,6 @@ typedef struct
     float3 viewPosition;
     float3 worldPosition;
     float3 normal;
-    float3 tangent;
-    float3 bitangent;
     float3 r;
     float2 texCoord;
 } ColorInOut;
@@ -86,12 +84,6 @@ float Geometry(float Ndotv, float alphaG) {
     return (float)(1.0 / (Ndotv + sqrt(a + b - a*b)));
 }
 
-float3 computeNormalMap(ColorInOut in, texture2d<float> normalMapTexture) {
-    float4 encodedNormal = normalMapTexture.sample(nearestSampler, float2(in.texCoord));
-    float4 normalMap = float4(normalize(encodedNormal.xyz * 2.0 - float3(1,1,1)), 0.0);
-    return float3(normalize(in.normal * normalMap.z + in.tangent * normalMap.x + in.bitangent * normalMap.y));
-}
-
 float3 computeDiffuse(LightingParameters parameters)
 {
     float3 diffuseRawValue = float3(((1.0/PI) * parameters.baseColor) * (1.0 - parameters.metalness));
@@ -140,27 +132,18 @@ LightingParameters calculateParameters(ColorInOut in,
                                        AAPLCameraData cameraData,
                                        constant AAPLLightData& lightData,
                                        texture2d<float>   baseColorMap,
-                                       texture2d<float>   normalMap,
                                        texture2d<float>   metallicMap,
                                        texture2d<float>   roughnessMap,
-                                       texture2d<float>   ambientOcclusionMap,
                                        texture2d<float>   skydomeMap)
 {
     LightingParameters parameters;
-
     parameters.baseColor = baseColorMap.sample(linearSampler, in.texCoord.xy);
-
     // the tangent space in not correct, normalmap ignore
     parameters.normal = in.normal;//computeNormalMap(in, normalMap);
-
     parameters.viewDir = normalize(cameraData.cameraPosition - float3(in.worldPosition));
-
     parameters.roughness = mix(0.01,1.0,roughnessMap.sample(linearSampler, in.texCoord.xy).x);
-
     parameters.metalness = max(metallicMap.sample(linearSampler, in.texCoord.xy).x, 0.1);
-
     parameters.ambientOcclusion = 1.0;//ambientOcclusionMap.sample(linearSampler, in.texCoord.xy).x;
-
     parameters.reflectedVector = reflect(-parameters.viewDir, parameters.normal);
     
     constexpr sampler linearFilterSampler(coord::normalized, address::clamp_to_edge, filter::linear);
@@ -244,8 +227,6 @@ vertex ColorInOut vertexShader(Vertex in [[stage_in]],
                                  objToWorld.columns[1].xyz,
                                  objToWorld.columns[2].xyz);
     out.normal = normalMx * normalize(in.normal);
-    out.tangent = normalMx * normalize(in.tangent);
-    out.bitangent = normalMx * normalize(in.bitangent);
 
     float3 v = out.worldPosition - cameraData.cameraPosition;
     out.r = reflect( v, out.normal );
@@ -287,10 +268,10 @@ fragment float4 fragmentShader(
                                                     cameraData,
                                                     lightData,
                                                     pSubmesh->materials[AAPLTextureIndexBaseColor],        //colorMap
-                                                    pSubmesh->materials[AAPLTextureIndexNormal],           //normalMap
+                                                    //pSubmesh->materials[AAPLTextureIndexNormal],           //normalMap
                                                     pSubmesh->materials[AAPLTextureIndexMetallic],         //metallicMap
                                                     pSubmesh->materials[AAPLTextureIndexRoughness],        //roughnessMap
-                                                    pSubmesh->materials[AAPLTextureIndexAmbientOcclusion], //ambientOcclusionMap
+                                                    //pSubmesh->materials[AAPLTextureIndexAmbientOcclusion], //ambientOcclusionMap
                                                     skydomeMap);
     float3 skylight = params.ambientOcclusion * 0.1;
     float li = lightData.lightIntensity;
@@ -322,14 +303,25 @@ fragment float4 fragmentShader(
     return final_color;
 }
 
-fragment float4 reflectionShader(ColorInOut in [[stage_in]],
-                                 texture2d<float> rtReflections [[texture(AAPLTextureIndexReflections)]])
+//fragment float4 reflectionShader(ColorInOut in [[stage_in]],
+//                                 texture2d<float> rtReflections [[texture(AAPLTextureIndexReflections)]])
+//{
+//    float2 screenTexcoord = calculateScreenCoord( in.currPosition );
+//    float4 reflectedColor = rtReflections.sample(linearSampler, screenTexcoord, level(0));
+//    reflectedColor.a = 1.0;
+//    return reflectedColor;
+//}
+
+fragment float4 irradianceShader(ColorInOut in [[stage_in]],
+                                 texture2d<float>            rtShadings            [[ texture(AAPLTextureIndexGI)]],
+                                 texture2d<float>            rtIrrandiance         [[ texture(AAPLTextureIndexIrrGI)]])
 {
     float2 screenTexcoord = calculateScreenCoord( in.currPosition );
-    float4 reflectedColor = rtReflections.sample(linearSampler, screenTexcoord, level(0));
+    float4 reflectedColor = rtIrrandiance.sample(linearSampler, screenTexcoord, level(0));
     reflectedColor.a = 1.0;
     return reflectedColor;
 }
+
 
 struct ThinGBufferOut
 {
@@ -471,24 +463,6 @@ kernel void rtShading(
 
                     float2 texcoord = (tc0 * bary3.x) + (tc1 * bary3.y) + (tc2 * bary3.z);
 
-                    // Tangent
-
-                    half3 t0 = pMesh->generics[i0].tangent.xyz;
-                    half3 t1 = pMesh->generics[i1].tangent.xyz;
-                    half3 t2 = pMesh->generics[i2].tangent.xyz;
-
-                    half3 tangent = (t0 * bary3.x) + (t1 * bary3.y) + (t2 * bary3.z);
-                    tangent = normalMx * tangent;
-
-                    // Bitangent
-
-                    half3 bt0 = pMesh->generics[i0].bitangent.xyz;
-                    half3 bt1 = pMesh->generics[i1].bitangent.xyz;
-                    half3 bt2 = pMesh->generics[i2].bitangent.xyz;
-
-                    half3 bitangent = (bt0 * bary3.x) + (bt1 * bary3.y) + (bt2 * bary3.z);
-                    bitangent = normalMx * bitangent;
-
                     // World Position:
 
                     packed_float3 wp0 = pMesh->positions[i0].xyz;
@@ -502,15 +476,11 @@ kernel void rtShading(
                     ColorInOut colorIn = {};
                     colorIn.worldPosition = worldPosition;
                     colorIn.normal = float3(n);
-                    colorIn.tangent = float3(tangent);
-                    colorIn.bitangent = float3(bitangent);
                     colorIn.texCoord = texcoord;
 
                     texture2d< float > baseColorMap        = submesh.materials[AAPLTextureIndexBaseColor];        //colorMap
-                    texture2d< float > normalMap           = submesh.materials[AAPLTextureIndexNormal];           //normalMap
-                    texture2d< float > metallicMap         = submesh.materials[AAPLTextureIndexMetallic];         //metallicMap
+                    texture2d< float > metallicMap         = submesh.materials[AAPLTextureIndexMetallic];      //metallicMap
                     texture2d< float > roughnessMap        = submesh.materials[AAPLTextureIndexRoughness];        //roughnessMap
-                    texture2d< float > ambientOcclusionMap = submesh.materials[AAPLTextureIndexAmbientOcclusion]; //ambientOcclusionMap
 
                     // For shading, adjust the camera position and the world position to
                     // correctly account for reflections in reflections (noticeable on the
@@ -525,10 +495,10 @@ kernel void rtShading(
                                                                     cd,
                                                                     lightData,
                                                                     baseColorMap,
-                                                                    normalMap,
+                                                                    //normalMap,
                                                                     metallicMap,
                                                                     roughnessMap,
-                                                                    ambientOcclusionMap,
+                                                                    //ambientOcclusionMap,
                                                                     skydomeMap);
                     
                     // check if in shadow
@@ -677,24 +647,6 @@ kernel void rtReflection(
 
                 float2 texcoord = (tc0 * bary3.x) + (tc1 * bary3.y) + (tc2 * bary3.z);
 
-                // Tangent
-
-                half3 t0 = pMesh->generics[i0].tangent.xyz;
-                half3 t1 = pMesh->generics[i1].tangent.xyz;
-                half3 t2 = pMesh->generics[i2].tangent.xyz;
-
-                half3 tangent = (t0 * bary3.x) + (t1 * bary3.y) + (t2 * bary3.z);
-                tangent = normalMx * tangent;
-
-                // Bitangent
-
-                half3 bt0 = pMesh->generics[i0].bitangent.xyz;
-                half3 bt1 = pMesh->generics[i1].bitangent.xyz;
-                half3 bt2 = pMesh->generics[i2].bitangent.xyz;
-
-                half3 bitangent = (bt0 * bary3.x) + (bt1 * bary3.y) + (bt2 * bary3.z);
-                bitangent = normalMx * bitangent;
-
                 // World Position:
 
                 packed_float3 wp0 = pMesh->positions[i0].xyz;
@@ -708,8 +660,6 @@ kernel void rtReflection(
                 ColorInOut colorIn = {};
                 colorIn.worldPosition = worldPosition;
                 colorIn.normal = float3(n);
-                colorIn.tangent = float3(tangent);
-                colorIn.bitangent = float3(bitangent);
                 colorIn.texCoord = texcoord;
 
                 texture2d< float > baseColorMap        = submesh.materials[AAPLTextureIndexBaseColor];        //colorMap
@@ -731,10 +681,10 @@ kernel void rtReflection(
                                                                 cd,
                                                                 lightData,
                                                                 baseColorMap,
-                                                                normalMap,
+                                                                //normalMap,
                                                                 metallicMap,
                                                                 roughnessMap,
-                                                                ambientOcclusionMap,
+                                                                //ambientOcclusionMap,
                                                                 skydomeMap);
                 
                 finalColor = float4( computeSpecular( params ) + lightData.lightIntensity * computeDiffuse( params ), 1.0 );
