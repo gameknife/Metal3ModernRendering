@@ -1367,36 +1367,12 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
             [commandBuffer pushDebugGroup:@"CS处理"];
             [commandBuffer encodeWaitForEvent:_accelerationStructureBuildEvent value:kInstanceAccelerationStructureBuild];
             
-            // reflection
-            if(_renderMode == RMReflectionsOnly ) [self executeCSProcess:commandBuffer inPSO:_rtReflectionPipeline outTexture:_rtReflectionMap label:@"光追反射"];
             // shading
             [self executeCSProcess:commandBuffer inPSO:_rtShadingPipeline outTexture:_rtShadingMap label:@"光追一次反弹"];
             
             [self executeCSProcess:commandBuffer inPSO:_rtBouncePipeline outTexture:_rtBounceMap label:@"光追二次反弹"];
             
             [commandBuffer popDebugGroup];
-            
-            if(_renderMode == RMReflectionsOnly)
-            {
-                // Generally, for accurate rough reflections, a renderer performs cone ray tracing in
-                // the ray tracing kernel.  In this case, the renderer simplifies this by blurring the
-                // mirror-like reflections along the mipchain.  The renderer later biases the miplevel
-                // that the GPU samples when reading the reflection in the accumulation pass.
-
-                [commandBuffer pushDebugGroup:@"Generate Reflection Mipmaps"];
-                const BOOL gaussianBlur = YES;
-                if ( gaussianBlur )
-                {
-                    [self generateGaussMipmapsForTexture:_rtReflectionMap commandBuffer:commandBuffer];
-                }
-                else
-                {
-                    id<MTLBlitCommandEncoder> genMips = [commandBuffer blitCommandEncoder];
-                    [genMips generateMipmapsForTexture:_rtReflectionMap];
-                    [genMips endEncoding];
-                }
-                [commandBuffer popDebugGroup];
-            }
             
             [commandBuffer pushDebugGroup:@"MPS降噪"];
             
@@ -1406,18 +1382,18 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
                                                             depthNormalTexture:_thinGBuffer.depthNormalTexture
                                                     previousDepthNormalTexture:_thinGBuffer.PrevDepthNormalTexture];
             
-            if( _renderMode == RMMetalRaytracing )
+            if( _renderMode == RMMetalRaytracing2 )
             {
                 denoisedIrr = [_denoiserIrr encodeToCommandBuffer:commandBuffer
-                                                                     sourceTexture:_rtIrradianceMap
+                                                                     sourceTexture:_rtBounceMap
                                                                motionVectorTexture:_thinGBuffer.motionVectorTexture
                                                                 depthNormalTexture:_thinGBuffer.depthNormalTexture
                                                         previousDepthNormalTexture:_thinGBuffer.PrevDepthNormalTexture];
             }
-            else if(_renderMode == RMMetalRaytracing2 )
+            else
             {
                 denoisedIrr = [_denoiserIrr encodeToCommandBuffer:commandBuffer
-                                                                     sourceTexture:_rtBounceMap
+                                                                     sourceTexture:_rtIrradianceMap
                                                                motionVectorTexture:_thinGBuffer.motionVectorTexture
                                                                 depthNormalTexture:_thinGBuffer.depthNormalTexture
                                                         previousDepthNormalTexture:_thinGBuffer.PrevDepthNormalTexture];
