@@ -69,7 +69,7 @@ typedef enum AAPLTextureIndex
     AAPLTextureIndexGI               = 7,
     AAPLTextureIndexIrrGI               = 8,
     AAPLSkyDomeTexture               = 9,
-    AAPLMaterialTextureCount = AAPLTextureIndexAmbientOcclusion+1,
+    AAPLMaterialTextureCount = AAPLTextureIndexAmbientOcclusion,
 } AAPLTextureIndex;
 
 // The buffer index values that the shader and the C code share to

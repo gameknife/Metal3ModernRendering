@@ -157,11 +157,11 @@ The implementation for the mesh and submesh objects.
                                 modelIOMaterialType:MDLMaterialPropertyTypeNone
                               metalKitTextureLoader:textureLoader];
 
-        _textures[AAPLTextureIndexAmbientOcclusion] =
-            [AAPLSubmesh createMetalTextureFromMaterial:modelIOSubmesh.material
-                                modelIOMaterialSemantic:MDLMaterialSemanticAmbientOcclusion
-                                    modelIOMaterialType:MDLMaterialPropertyTypeNone
-                                  metalKitTextureLoader:textureLoader];
+//        _textures[AAPLTextureIndexAmbientOcclusion] =
+//            [AAPLSubmesh createMetalTextureFromMaterial:modelIOSubmesh.material
+//                                modelIOMaterialSemantic:MDLMaterialSemanticAmbientOcclusion
+//                                    modelIOMaterialType:MDLMaterialPropertyTypeNone
+//                                  metalKitTextureLoader:textureLoader];
     }
     return self;
 }
@@ -482,7 +482,7 @@ The implementation for the mesh and submesh objects.
     
     {
         // Repeat the floor texture coordinates 20 times over.
-        const float kFloorRepeat = 20.0f;
+        const float kFloorRepeat = 200.0f;
         MDLVertexAttributeData* texcoords = [modelIOMesh vertexAttributeDataForAttributeNamed:MDLVertexAttributeTextureCoordinate];
         NSAssert( texcoords, @"Mesh contains no texture coordinate data" );
         MDLMeshBufferMap* map = texcoords.map;

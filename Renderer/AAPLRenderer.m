@@ -152,7 +152,7 @@ typedef struct ThinGBuffer
         _denoiser = [[MPSSVGFDenoiser alloc] initWithSVGF:svgf textureAllocator:_textureAllocator];
         _denoiser.bilateralFilterIterations = 2;
         _denoiserIrr = [[MPSSVGFDenoiser alloc] initWithSVGF:svgf textureAllocator:_textureAllocator];
-        _denoiserIrr.bilateralFilterIterations = 3;
+        _denoiserIrr.bilateralFilterIterations = 5;
     
 
     // Create the temporal antialiasing object
@@ -198,7 +198,7 @@ typedef struct ThinGBuffer
         // ray-trace加速结构
         [self buildRTAccelerationStructures];
         _cameraAngle = 0.5 * M_PI;
-        _cameraPanSpeedFactor = 0.0f;
+        _cameraPanSpeedFactor = 0.5f;
         _metallicBias = 0.0f;
         _roughnessBias = 0.0f;
         _exposure = 1.5f;
@@ -215,20 +215,24 @@ typedef struct ThinGBuffer
     NSAssert(kMaxInstances == 4, @"Expected 3 Model Instances");
 
     _modelInstances[0].meshIndex = 0;
-    _modelInstances[0].position = (vector_float3){20.0f, -5.0f, -40.0f};
-    _modelInstances[0].rotationRad = 135 * M_PI / 180.0f;
+    _modelInstances[0].position = (vector_float3){0, -5.0f, -40.0f};
+    _modelInstances[0].rotationRad = -60 * M_PI / 180.0f;
 
     _modelInstances[1].meshIndex = 0;
-    _modelInstances[1].position = (vector_float3){-13.0f, -5.0f, -20.0f};
-    _modelInstances[1].rotationRad = 235 * M_PI / 180.0f;
+    _modelInstances[1].position = (vector_float3){40.0f, -5.0f, -80.0f};
+    _modelInstances[1].rotationRad = -60 * M_PI / 180.0f;
     
-    _modelInstances[2].meshIndex = 1;
-    _modelInstances[2].position = (vector_float3){-5.0f, 2.75f, -55.0f};
-    _modelInstances[2].rotationRad = 0.0f;
+    _modelInstances[2].meshIndex = 0;
+    _modelInstances[2].position = (vector_float3){40.0f, 10.0f, -80.0f};
+    _modelInstances[2].rotationRad = -60 * M_PI / 180.0f;
+    
+//    _modelInstances[2].meshIndex = 1;
+//    _modelInstances[2].position = (vector_float3){-5.0f, -20.75f, -55.0f};
+//    _modelInstances[2].rotationRad = 0.0f;
     
     _modelInstances[3].meshIndex = 2;
     _modelInstances[3].position = (vector_float3){0.0f, -5.0f, -0.0f};
-    _modelInstances[3].rotationRad = 0.0f;
+    _modelInstances[3].rotationRad = -60 * M_PI / 180.0f;
 }
 
 - (void)resizeRTReflectionMapTo:(CGSize)size
@@ -492,7 +496,7 @@ typedef struct ThinGBuffer
     modelIOVertexDescriptor.attributes[AAPLVertexAttributeTangent].name   = MDLVertexAttributeTangent;
     modelIOVertexDescriptor.attributes[AAPLVertexAttributeBitangent].name = MDLVertexAttributeBitangent;
 
-    NSURL *modelFileURL = [[NSBundle mainBundle] URLForResource:@"Models/firetruck.obj"
+    NSURL *modelFileURL = [[NSBundle mainBundle] URLForResource:@"Models/test.obj"
                                                   withExtension:nil];
 
     NSAssert(modelFileURL, @"Could not find model (%@) file in bundle creating specular texture", modelFileURL.absoluteString);
@@ -505,7 +509,7 @@ typedef struct ThinGBuffer
 
     [scene addObject:[AAPLMesh newSphereWithRadius:8.0f onDevice:_device vertexDescriptor:modelIOVertexDescriptor]];
     
-    [scene addObject:[AAPLMesh newPlaneWithDimensions:(vector_float2){200.0f, 200.0f} onDevice:_device vertexDescriptor:modelIOVertexDescriptor]];
+    [scene addObject:[AAPLMesh newPlaneWithDimensions:(vector_float2){400.0f, 400.0f} onDevice:_device vertexDescriptor:modelIOVertexDescriptor]];
     
     _meshes = scene;
     
@@ -1004,14 +1008,14 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
     }
 
     [self updateCameraState];
-
-    AAPLLightData* pLightData = (AAPLLightData *)(_lightDataBuffer.contents);
-    pLightData->directionalLightInvDirection = -vector_normalize((vector_float3){ 0, -6, 6 });
-    pLightData->lightIntensity = 5.0f;
 }
 
 - (void)updateCameraState
 {
+    AAPLLightData* pLightData = (AAPLLightData *)(_lightDataBuffer.contents);
+    pLightData->directionalLightInvDirection = -vector_normalize((vector_float3){ cosf(_cameraAngle) * 6.0 , -4, sinf(_cameraAngle) * 6.0 });
+    pLightData->lightIntensity = 5.0f;
+    
     // Determine next safe slot:
     
     
@@ -1055,7 +1059,8 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
     pCameraData->frameIndex = _frameCount;
     // Update Camera Position (and View Matrix):
 
-    vector_float3 camPos = (vector_float3){ cosf( _cameraAngle ) * 10.0f, 5, sinf(_cameraAngle) * 22.5f };
+    //vector_float3 camPos = (vector_float3){ cosf( _cameraAngle ) * 10.0f, 5, sinf(_cameraAngle) * 22.5f };
+    vector_float3 camPos = (vector_float3){0,5,30};
     _cameraAngle += (0.02 * _cameraPanSpeedFactor);
     if ( _cameraAngle >= 2 * M_PI )
     {
@@ -1365,13 +1370,13 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
             [commandBuffer encodeWaitForEvent:_accelerationStructureBuildEvent value:kInstanceAccelerationStructureBuild];
             
             // reflection
-            [self executeCSProcess:commandBuffer inPSO:_rtReflectionPipeline outTexture:_rtReflectionMap label:@"光追反射"];
+            if(_renderMode == RMReflectionsOnly ) [self executeCSProcess:commandBuffer inPSO:_rtReflectionPipeline outTexture:_rtReflectionMap label:@"光追反射"];
             // shading
             [self executeCSProcess:commandBuffer inPSO:_rtShadingPipeline outTexture:_rtShadingMap label:@"光追天光遮蔽"];
             
             [commandBuffer popDebugGroup];
             
-            if(true)
+            if(_renderMode == RMReflectionsOnly)
             {
                 // Generally, for accurate rough reflections, a renderer performs cone ray tracing in
                 // the ray tracing kernel.  In this case, the renderer simplifies this by blurring the
@@ -1556,7 +1561,7 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
 
 - (matrix_float4x4)projectionMatrixWithAspect:(float)aspect
 {
-    return matrix_perspective_right_hand(65.0f * (M_PI / 180.0f), aspect, 0.1f, 250.0f);
+    return matrix_perspective_right_hand(45.0f * (M_PI / 180.0f), aspect, 0.1f, 250.0f);
 }
 
 #pragma mark - Event Handling
@@ -1572,7 +1577,7 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
     _projectionMatrix = [self projectionMatrixWithAspect:aspect];
 
     // The passed-in size is already in backing coordinates.
-    [self resizeRTReflectionMapTo:size];
+    [self resizeRTReflectionMapTo:view.bounds.size];
     
     _frameCount = 0;
 }

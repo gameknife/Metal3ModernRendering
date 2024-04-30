@@ -24,7 +24,6 @@ typedef struct
     float4 currPosition;
     float4 prevPosition;
     float3 viewPosition;
-    float3 ndcpos;
     float3 worldPosition;
     float3 normal;
     float3 tangent;
@@ -57,7 +56,8 @@ struct LightingParameters
 constexpr sampler linearSampler (address::repeat,
                                  mip_filter::linear,
                                  mag_filter::linear,
-                                 min_filter::linear);
+                                 min_filter::linear,
+                                 max_anisotropy(16));
 
 constexpr sampler nearestSampler(address::repeat,
                                  min_filter::nearest,
@@ -150,7 +150,8 @@ LightingParameters calculateParameters(ColorInOut in,
 
     parameters.baseColor = baseColorMap.sample(linearSampler, in.texCoord.xy);
 
-    parameters.normal = computeNormalMap(in, normalMap);
+    // the tangent space in not correct, normalmap ignore
+    parameters.normal = in.normal;//computeNormalMap(in, normalMap);
 
     parameters.viewDir = normalize(cameraData.cameraPosition - float3(in.worldPosition));
 
@@ -233,7 +234,6 @@ vertex ColorInOut vertexShader(Vertex in [[stage_in]],
     out.currPosition = out.position;
     out.prevPosition = cameraData.prevProjectionMatrix * cameraData.prevViewMatrix * instanceTransform.modelViewMatrix * position;
     out.viewPosition = (cameraData.viewMatrix * instanceTransform.modelViewMatrix * position).xyz;
-    out.ndcpos = out.position.xyz/out.position.w;
 
     // Reflections and lighting that occur in the world space, so
     // `camera.viewMatrix` isn’t taken into consideration here.
@@ -255,11 +255,9 @@ vertex ColorInOut vertexShader(Vertex in [[stage_in]],
     return out;
 }
 
-float2 calculateScreenCoord( float3 ndcpos )
+float2 calculateScreenCoord( float4 rawposition )
 {
-    //float2 screenTexcoord = (ndcpos.xy) * 0.5 + float2(0.5);
-    //screenTexcoord.y = 1.0 - screenTexcoord.y;
-    float2 screenTexcoord = (ndcpos.xy) * float2(0.5f, -0.5f) + float2(0.5f,0.5f);
+    float2 screenTexcoord = rawposition.xy / rawposition.w * float2(0.5f, -0.5f) + float2(0.5f,0.5f);
     return screenTexcoord;
 }
 
@@ -280,7 +278,7 @@ fragment float4 fragmentShader(
                                    mag_filter::linear,
                                    min_filter::linear);
 
-    float2 screenTexcoord = calculateScreenCoord( in.ndcpos );
+    float2 screenTexcoord = calculateScreenCoord( in.currPosition );
     
     constant Mesh* pMesh = &(pScene->meshes[ pScene->instances[submeshKeypath.instanceID].meshIndex ]);
     constant Submesh* pSubmesh = &(pMesh->submeshes[submeshKeypath.submeshID]);
@@ -301,20 +299,20 @@ fragment float4 fragmentShader(
 
     if ( is_raytracing_enabled )
     {
-        uint8_t mipLevel = params.roughness * rtReflections.get_num_mip_levels();
-        float3 reflectedColor = rtReflections.sample(colorSampler, screenTexcoord, level(mipLevel)).xyz;
+        //uint8_t mipLevel = params.roughness * rtReflections.get_num_mip_levels();
+        //float3 reflectedColor = rtReflections.sample(colorSampler, screenTexcoord, level(mipLevel)).xyz;
 
         //float hasReflection = (dot( reflectedColor.rgb, float3(1,1,1) ) > 0.0);
         //params.irradiatedColor = mix(params.irradiatedColor, reflectedColor.rgb, hasReflection);
         
         
-        float4 gi = rtShadings.sample(colorSampler, screenTexcoord, level(0)).xyzw;
+        float4 gi = rtShadings.sample(colorSampler, screenTexcoord).xyzw;
         li *= gi.y;
         
-        params.irradiatedColor = reflectedColor.rgb * reflectedColor.rgb * gi.x;
+        params.irradiatedColor = 0;//reflectedColor.rgb * reflectedColor.rgb * gi.x;
         
-        float4 irr = rtIrrandiance.sample(colorSampler, screenTexcoord, level(0)).xyzw;
-        skylight *= irr.xyz * 2.0;
+        float4 irr = rtIrrandiance.sample(colorSampler, screenTexcoord).xyzw;
+        skylight *= irr.xyz * 5.0;
         
     }
     params.metalness += cameraData.metallicBias;
@@ -327,7 +325,7 @@ fragment float4 fragmentShader(
 fragment float4 reflectionShader(ColorInOut in [[stage_in]],
                                  texture2d<float> rtReflections [[texture(AAPLTextureIndexReflections)]])
 {
-    float2 screenTexcoord = calculateScreenCoord( in.ndcpos );
+    float2 screenTexcoord = calculateScreenCoord( in.currPosition );
     float4 reflectedColor = rtReflections.sample(linearSampler, screenTexcoord, level(0));
     reflectedColor.a = 1.0;
     return reflectedColor;
@@ -405,9 +403,10 @@ kernel void rtShading(
             Loki rng = Loki(tid.x + 1, tid.y + 1, cameraData.frameIndex);
             
             // 构造一个在normal半球内的ray
-            uint skyRayCount = 4;
-            float hit = 0.0;
+            uint skyRayCount = 8;
+            uint sunRayCount = 2;
             
+            float hit = 0.0;
             raytracing::intersector<raytracing::instancing, raytracing::triangle_data> inter;
             inter.assume_geometry_type( raytracing::geometry_type::triangle );
             
@@ -546,7 +545,7 @@ kernel void rtShading(
                     if ( intersectionb.type == raytracing::intersection_type::none )
                     {
                         // if not in shadow, accumlate the direct light as bounce, consider light atten
-                        finalIrradiance += lightData.lightIntensity * 0.5 * ndotl_bounce * params.nDotl / (float)skyRayCount;
+                        finalIrradiance += lightData.lightIntensity * 1.0 * ndotl_bounce * params.nDotl / (float)skyRayCount;
                     }
                 }
                 else if ( intersection.type == raytracing::intersection_type::none )
@@ -561,7 +560,6 @@ kernel void rtShading(
             finalColor.x = hit / (float)skyRayCount;
             
             // lightcasting
-            uint sunRayCount = 4;
             float shadowHit = 0;
             for( uint i = 0; i < sunRayCount; ++i)
             {
