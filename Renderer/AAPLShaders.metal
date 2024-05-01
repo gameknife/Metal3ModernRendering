@@ -430,7 +430,7 @@ kernel void rtShading(
             Loki rng = Loki(tid.x + 1, tid.y + 1, cameraData.frameIndex);
             
             // 构造一个在normal半球内的ray
-            uint skyRayCount = 4;
+            uint skyRayCount = 8;
             uint sunRayCount = 1;
             
             float hit = 0.0;
@@ -618,6 +618,7 @@ kernel void rtShading(
 
 kernel void rtBounce(
              texture2d< float, access::write >      outImage                [[texture(OutImageIndex)]],
+             texture2d< float, access::write >      outReflcetion           [[texture(RefectionMapIndex)]],
              texture2d< float >                     irradiance              [[texture(IrradianceMapIndex)]],
              texture2d< float >                     positions               [[texture(ThinGBufferPositionIndex)]],
              texture2d< float >                     directions              [[texture(ThinGBufferDirectionIndex)]],
@@ -644,10 +645,9 @@ kernel void rtBounce(
             auto position = positions.read(tid).xyz;
             auto normal = directions.read(tid).yzw;
             Loki rng = Loki(tid.x + 1, tid.y + 1, cameraData.frameIndex);
-            uint offset = rng.rand() * 100;
             
             // 构造一个在normal半球内的ray
-            uint skyRayCount = 2;
+            uint skyRayCount = 4;
 
             raytracing::intersector<raytracing::instancing, raytracing::triangle_data> inter;
             inter.assume_geometry_type( raytracing::geometry_type::triangle );
@@ -658,10 +658,6 @@ kernel void rtBounce(
 
                 // 这里需要构造一个基于法线的hemisphere来采样，并且引入重要性分布，使用hottonPattern
                 r.origin = position;
-                //r.direction = normalize(float3(rng.rand() - 0.5,rng.rand() - 0.5,rng.rand() - 0.5));
-                
-//                float2 uv = float2(halton(offset + cameraData.frameIndex, 2 + i * 5 + 3),
-//                           halton(offset + cameraData.frameIndex, 2 + i * 5 + 4));
                 float2 uv = float2(rng.rand(), rng.rand());
                 float3 worldSpaceSampleDirection = sampleCosineWeightedHemisphere(uv);
                 worldSpaceSampleDirection = alignWithNormal(worldSpaceSampleDirection, normal);
@@ -686,14 +682,65 @@ kernel void rtBounce(
                                                    mag_filter::linear,
                                                    min_filter::linear);
                     float4 gi = irradiance.sample(colorSampler, screenTexcoord).xyzw * 0.5;// 衰减为0.5
-                    
+                    // 这里hpos有可能是在实际像素的后方，应该在用depth检查一下
                     finalIrradiance += gi / (float)skyRayCount;
                 }
-               
+            }
+            
+            uint specularRayCount = 2;
+            for( uint i = 0; i < specularRayCount; ++i)
+            {
+                raytracing::ray r;
+                r.origin = position;
+                float2 uv = float2(rng.rand(), rng.rand());
+                // this cone radius is roughness tageted
+                float3 sample = sampleCone(uv, cos(2.0f / 180.0f * M_PI_F));
+                
+                float3 v = normalize(position - cameraData.cameraPosition);
+                auto refl = reflect( v, normal );
+
+                r.direction = alignWithNormal(sample, refl);
+                
+                r.min_distance = 0.0;
+                r.max_distance = FLT_MAX;
+                
+                auto intersection = inter.intersect( r, accelerationStructure, 0xFF );
+                if ( intersection.type == raytracing::intersection_type::triangle )
+                {
+                    // 打到了, 从上一次的反弹结果取颜色
+                    auto worldPosition = r.origin + r.direction * intersection.distance;
+                    
+                    // 从worldPosition计算出采样坐标
+                    auto hpos = cameraData.projectionMatrix * cameraData.viewMatrix * float4(worldPosition, 1.0);
+                    auto screenTexcoord = calculateScreenCoord(hpos);
+                    
+                    if(screenTexcoord.x < 1.0 && screenTexcoord.y < 1.0)
+                    {
+                        constexpr sampler colorSampler(mip_filter::linear,
+                                                       mag_filter::linear,
+                                                       min_filter::linear);
+                        
+                        constexpr sampler posSampler(mip_filter::nearest,
+                                                       mag_filter::nearest,
+                                                       min_filter::nearest);
+                        
+                        float3 targetpos = positions.sample(posSampler, screenTexcoord).xyz;
+                        if( distance(targetpos, worldPosition) < 0.5 )
+                        {
+                            float4 gi = irradiance.sample(colorSampler, screenTexcoord).xyzw;
+                            finalColor += gi / (float)specularRayCount;
+                        }
+                    }
+                }
+                else if ( intersection.type == raytracing::intersection_type::none )
+                {
+                    // 没打到
+                }
             }
         }
         // combine with first bounce here
         float4 firstbounce = irradiance.read(tid);
+        outReflcetion.write( finalColor, tid );
         outImage.write( firstbounce + finalIrradiance, tid );
     }
 }
@@ -727,148 +774,6 @@ kernel void rtCombine(
 //        finalIrradiance += gi / (float)skyRayCount;
 
         outImage.write( finalIrradiance, tid );
-    }
-}
-kernel void rtReflection(
-             texture2d< float, access::write >      outImage                [[texture(OutImageIndex)]],
-             texture2d< float >                     positions               [[texture(ThinGBufferPositionIndex)]],
-             texture2d< float >                     directions              [[texture(ThinGBufferDirectionIndex)]],
-             texture2d< float >                     skydomeMap              [[texture(AAPLSkyDomeTexture)]],
-             constant AAPLInstanceTransform*        instanceTransforms      [[buffer(BufferIndexInstanceTransforms)]],
-             constant AAPLCameraData&               cameraData              [[buffer(BufferIndexCameraData)]],
-             constant AAPLLightData&                lightData               [[buffer(BufferIndexLightData)]],
-             constant Scene*                        pScene                  [[buffer(SceneIndex)]],
-             instance_acceleration_structure        accelerationStructure   [[buffer(AccelerationStructureIndex)]],
-             uint2 tid [[thread_position_in_grid]])
-{
-
-    uint w = outImage.get_width();
-    uint h = outImage.get_height();
-    if ( tid.x < w&& tid.y < h )
-    {
-        float4 finalColor = float4( 0.0, 0.0, 0.0, 1.0 );
-        if (is_null_instance_acceleration_structure(accelerationStructure))
-        {
-            finalColor = float4( 1.0, 0.0, 1.0, 1.0 );
-        }
-        else
-        {
-            raytracing::ray r;
-            auto position = positions.read(tid).xyz;
-            auto normal = directions.read(tid).yzw;
-            float3 v = normalize(position - cameraData.cameraPosition);
-            auto refl = reflect( v, normal );
-            r.origin = position;
-            r.direction = refl;
-            r.min_distance = 0.1;
-            r.max_distance = FLT_MAX;
-            
-            // 这里造了一根反射ray，找到反射的tri，然后算出光照结果
-            // 非常完整，相当于是单像素的scene rendering了
-            // 这里可以作一个简单的raytraced ao，半球内随机打ray，有结果的贡献遮蔽
-            
-            raytracing::intersector<raytracing::instancing, raytracing::triangle_data> inter;
-            inter.assume_geometry_type( raytracing::geometry_type::triangle );
-            auto intersection = inter.intersect( r, accelerationStructure, 0xFF );
-            if ( intersection.type == raytracing::intersection_type::triangle )
-            {
-                float2 bary2 = intersection.triangle_barycentric_coord;
-                float3 bary3 = float3( 1.0 - (bary2.x + bary2.y), bary2.x, bary2.y );
-
-                constant Instance& instance = pScene->instances[ intersection.instance_id ];
-                constant Mesh* pMesh = &(pScene->meshes[instance.meshIndex]);
-                constant Submesh & submesh = pMesh->submeshes[ intersection.geometry_id ];
-                
-                uint32_t i0, i1, i2;
-                
-                if ( submesh.shortIndexType )
-                {
-                    constant uint16_t* pIndices = (constant uint16_t *)submesh.indices;
-                    i0 = pIndices[ intersection.primitive_id * 3 + 0];
-                    i1 = pIndices[ intersection.primitive_id * 3 + 1];
-                    i2 = pIndices[ intersection.primitive_id * 3 + 2];
-                }
-                else
-                {
-                    constant uint32_t* pIndices = (constant uint32_t *)submesh.indices;
-                    i0 = pIndices[ intersection.primitive_id * 3 + 0];
-                    i1 = pIndices[ intersection.primitive_id * 3 + 1];
-                    i2 = pIndices[ intersection.primitive_id * 3 + 2];
-                }
-
-                float4x4 mv = instance.transform;
-                half3x3 normalMx = half3x3(half3(mv.columns[0].xyz), half3(mv.columns[1].xyz), half3(mv.columns[2].xyz));
-
-                // Normal
-
-                half3 n0 = pMesh->generics[i0].normal.xyz;
-                half3 n1 = pMesh->generics[i1].normal.xyz;
-                half3 n2 = pMesh->generics[i2].normal.xyz;
-
-                half3 n = (n0 * bary3.x) + (n1 * bary3.y) + (n2 * bary3.z);
-                n = normalize(normalMx * n);
-
-                // Texcoords
-
-                float2 tc0 = pMesh->generics[i0].texcoord.xy;
-                float2 tc1 = pMesh->generics[i1].texcoord.xy;
-                float2 tc2 = pMesh->generics[i2].texcoord.xy;
-
-                float2 texcoord = (tc0 * bary3.x) + (tc1 * bary3.y) + (tc2 * bary3.z);
-
-                // World Position:
-
-                packed_float3 wp0 = pMesh->positions[i0].xyz;
-                packed_float3 wp1 = pMesh->positions[i1].xyz;
-                packed_float3 wp2 = pMesh->positions[i2].xyz;
-
-                packed_float3 worldPosition = (wp0 * bary3.x) + (wp1 * bary3.y) + (wp2 * bary3.z);
-
-                // Prepare structures for shading:
-                
-                ColorInOut colorIn = {};
-                colorIn.worldPosition = worldPosition;
-                colorIn.normal = float3(n);
-                colorIn.texCoord = texcoord;
-
-                texture2d< float > baseColorMap        = submesh.materials[AAPLTextureIndexBaseColor];        //colorMap
-                texture2d< float > normalMap           = submesh.materials[AAPLTextureIndexNormal];           //normalMap
-                texture2d< float > metallicMap         = submesh.materials[AAPLTextureIndexMetallic];         //metallicMap
-                texture2d< float > roughnessMap        = submesh.materials[AAPLTextureIndexRoughness];        //roughnessMap
-                texture2d< float > ambientOcclusionMap = submesh.materials[AAPLTextureIndexAmbientOcclusion]; //ambientOcclusionMap
-
-                // For shading, adjust the camera position and the world position to
-                // correctly account for reflections in reflections (noticeable on the
-                // sphere's reflection environment map). This is because to correctly
-                // sample the environment map, the shader needs to take into account that
-                // the ray starts from the thin G-Buffer, not from the camera.
-                AAPLCameraData cd( cameraData );
-                cd.cameraPosition = r.origin;
-                colorIn.worldPosition = r.origin + r.direction * intersection.distance;
-                
-                LightingParameters params = calculateParameters(colorIn,
-                                                                cd,
-                                                                lightData,
-                                                                submesh.baseColor,
-                                                                baseColorMap,
-                                                                //normalMap,
-                                                                metallicMap,
-                                                                roughnessMap,
-                                                                //ambientOcclusionMap,
-                                                                skydomeMap);
-                
-                finalColor = float4( computeSpecular( params ) + lightData.lightIntensity * computeDiffuse( params ), 1.0 );
-                finalColor.rgb *= lightData.lightIntensity;
-
-            }
-            else if ( intersection.type == raytracing::intersection_type::none )
-            {
-                constexpr sampler linearFilterSampler(coord::normalized, address::clamp_to_edge, filter::linear);
-                float3 c = equirectangularSample( r.direction, linearFilterSampler, skydomeMap ).rgb;
-                finalColor = float4( clamp( c, 0.0f, kMaxHDRValue ), 1.0f);
-            }
-        }
-        outImage.write( finalColor, tid );
     }
 }
 

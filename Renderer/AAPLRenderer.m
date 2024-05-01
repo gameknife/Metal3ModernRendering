@@ -403,12 +403,6 @@ typedef struct ThinGBuffer
 
     if(_device.supportsRaytracing)
     {
-        _rtReflectionFunction = [defaultLibrary newFunctionWithName:@"rtReflection"];
-
-        _rtReflectionPipeline = [_device newComputePipelineStateWithFunction:_rtReflectionFunction error:&error];
-        NSAssert(_rtReflectionPipeline, @"Failed to create RT reflection compute pipeline state: %@", error);
-        
-        
         _rtShadingFunction = [defaultLibrary newFunctionWithName:@"rtShading"];
         _rtShadingPipeline = [_device newComputePipelineStateWithFunction:_rtShadingFunction error:&error];
         NSAssert(_rtShadingPipeline, @"Failed to create RT shading compute pipeline state: %@", error);
@@ -870,7 +864,7 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
 {
     AAPLLightData* pLightData = (AAPLLightData *)(_lightDataBuffer.contents);
     pLightData->directionalLightInvDirection = -vector_normalize((vector_float3){ cosf(_cameraAngle) * 6.0 , -3, sinf(_cameraAngle) * 6.0 });
-    pLightData->lightIntensity = 5.0f;
+    pLightData->lightIntensity = 50.0f;
     
     // Determine next safe slot:
     
@@ -1080,6 +1074,7 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
     [compEnc setTexture:_thinGBuffer.positionTexture atIndex:ThinGBufferPositionIndex];
     [compEnc setTexture:_thinGBuffer.depthNormalTexture atIndex:ThinGBufferDirectionIndex];
     [compEnc setTexture:_rtIrradianceMap atIndex:IrradianceMapIndex];
+    [compEnc setTexture:_rtReflectionMap atIndex:RefectionMapIndex];
     [compEnc setTexture:_skyMap atIndex:AAPLSkyDomeTexture];
     
     // Bind the root of the argument buffer for the scene.
@@ -1270,7 +1265,7 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
         
         // Encode the forward pass.
         
-        id <MTLTexture> compositeTexture = [_textureAllocator textureWithPixelFormat:MTLPixelFormatRG11B10Float width:_size.width height:_size.height];
+        id <MTLTexture> compositeTexture = [_textureAllocator textureWithPixelFormat:MTLPixelFormatRG11B10Float width:_size.width * 2.0 height:_size.height * 2.0];
         
         MTLRenderPassDescriptor* rpd = view.currentRenderPassDescriptor;
         id<MTLTexture> drawableTexture = rpd.colorAttachments[0].texture;
@@ -1354,27 +1349,27 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
         [commandBuffer popDebugGroup];
         
         id <MTLTexture> AATexture = compositeTexture;
-        if(true)
-        {
-            [commandBuffer pushDebugGroup:@"TAA"];
-            
-            if (_frameCount > 0) {
-                AATexture = [_textureAllocator textureWithPixelFormat:MTLPixelFormatRG11B10Float width:_size.width height:_size.height];
-            
-                [_TAA encodeToCommandBuffer:commandBuffer
-                              sourceTexture:compositeTexture
-                            previousTexture:_rawColorMap
-                         destinationTexture:AATexture
-                        motionVectorTexture:_thinGBuffer.motionVectorTexture
-                               depthTexture:_thinGBuffer.depthNormalTexture];
-                
-                [_textureAllocator returnTexture:compositeTexture];
-            }
-            
-            [commandBuffer popDebugGroup];
-        }
-        if(_rawColorMap)
-            [_textureAllocator returnTexture:_rawColorMap];
+//        if(false)
+//        {
+//            [commandBuffer pushDebugGroup:@"TAA"];
+//            
+//            if (_frameCount > 0) {
+//                AATexture = [_textureAllocator textureWithPixelFormat:MTLPixelFormatRG11B10Float width:_size.width height:_size.height];
+//            
+//                [_TAA encodeToCommandBuffer:commandBuffer
+//                              sourceTexture:compositeTexture
+//                            previousTexture:_rawColorMap
+//                         destinationTexture:AATexture
+//                        motionVectorTexture:_thinGBuffer.motionVectorTexture
+//                               depthTexture:_thinGBuffer.depthNormalTexture];
+//                
+//                [_textureAllocator returnTexture:compositeTexture];
+//            }
+//            
+//            [commandBuffer popDebugGroup];
+//        }
+//        if(_rawColorMap)
+//            [_textureAllocator returnTexture:_rawColorMap];
         
         _rawColorMap = AATexture;
  

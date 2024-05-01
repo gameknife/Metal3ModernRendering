@@ -20,6 +20,7 @@ typedef enum RTReflectionKernelImageIndex
     ThinGBufferPositionIndex        = 1,
     ThinGBufferDirectionIndex       = 2,
     IrradianceMapIndex              = 3,
+    RefectionMapIndex               = 4,
 } RTReflectionKernelImageIndex;
 
 typedef enum RTReflectionKernelBufferIndex
