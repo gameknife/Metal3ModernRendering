@@ -347,7 +347,7 @@ The implementation for the mesh and submesh objects.
 {
     MTKMeshBufferAllocator* bufferAllocator = [[MTKMeshBufferAllocator alloc] initWithDevice:device];
 
-    MDLMesh* mdlMesh = [MDLMesh newEllipsoidWithRadii:(vector_float3){200, 200, 200}
+    MDLMesh* mdlMesh = [MDLMesh newEllipsoidWithRadii:(vector_float3){800, 800, 800}
                                        radialSegments:10
                                      verticalSegments:10
                                          geometryType:MDLGeometryTypeTriangles

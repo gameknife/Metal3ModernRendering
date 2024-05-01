@@ -364,6 +364,37 @@ fragment ThinGBufferOut gBufferFragmentShader(ColorInOut in [[stage_in]],
 #pragma mark - Ray tracing
 using raytracing::instance_acceleration_structure;
 
+// Maps two uniformly random numbers to a uniform distribution within a cone
+float3 sampleCone(float2 u, float cosAngle) {
+    float phi = 2.0f * M_PI_F * u.x;
+    float cos_phi;
+    float sin_phi = sincos(phi, cos_phi);
+    float cos_theta = 1.0f - u.y + u.y * cosAngle;
+    float sin_theta = sqrt(1.0f - cos_theta * cos_theta);
+    return float3(sin_theta * cos_phi, cos_theta, sin_theta * sin_phi);
+}
+
+// Aligns a direction such that the "up" direction (0, 1, 0) maps to the given
+// surface normal direction
+float3 alignWithNormal(float3 sample, float3 normal) {
+    float3 up = normal;
+    float3 right = normalize(cross(normal, float3(0.0072f, 1.0f, 0.0034f)));
+    float3 forward = cross(right, up);
+    return sample.x * right + sample.y * up + sample.z * forward;
+}
+
+// Uses the inversion method to map two uniformly random numbers to a 3D
+// unit hemisphere, where the probability of a given sample is proportional to the cosine
+// of the angle between the sample direction and the "up" direction (0, 1, 0).
+inline float3 sampleCosineWeightedHemisphere(float2 u) {
+    float phi = 2.0f * M_PI_F * u.x;
+    float cos_phi;
+    float sin_phi = sincos(phi, cos_phi);
+    float cos_theta = sqrt(u.y);
+    float sin_theta = sqrt(1.0f - cos_theta * cos_theta);
+    return float3(sin_theta * cos_phi, cos_theta, sin_theta * sin_phi);
+}
+
 kernel void rtShading(
              texture2d< float, access::write >      outImage                [[texture(OutImageIndex)]],
              texture2d< float, access::write >      outIrradiance                [[texture(IrradianceMapIndex)]],
@@ -392,11 +423,12 @@ kernel void rtShading(
         {
             auto position = positions.read(tid).xyz;
             auto normal = directions.read(tid).yzw;
+            
             Loki rng = Loki(tid.x + 1, tid.y + 1, cameraData.frameIndex);
             
             // 构造一个在normal半球内的ray
-            uint skyRayCount = 8;
-            uint sunRayCount = 2;
+            uint skyRayCount = 4;
+            uint sunRayCount = 1;
             
             float hit = 0.0;
             raytracing::intersector<raytracing::instancing, raytracing::triangle_data> inter;
@@ -408,7 +440,16 @@ kernel void rtShading(
 
                 // 这里需要构造一个基于法线的hemisphere来采样，并且引入重要性分布，使用hottonPattern
                 r.origin = position;
-                r.direction = normalize(float3(rng.rand() - 0.5,rng.rand() - 0.5,rng.rand() - 0.5));
+                
+                //r.direction = normalize(float3(rng.rand() - 0.5,rng.rand() - 0.5,rng.rand() - 0.5));
+//                float2 uv = float2(halton(offset + cameraData.frameIndex, 2 + i * 5 + 3),
+//                           halton(offset + cameraData.frameIndex, 2 + i * 5 + 4));
+                float2 uv = float2(rng.rand(), rng.rand());
+                float3 worldSpaceSampleDirection = sampleCosineWeightedHemisphere(uv);
+                worldSpaceSampleDirection = alignWithNormal(worldSpaceSampleDirection, normal);
+                
+                r.direction = worldSpaceSampleDirection;
+                
                 r.min_distance = 0.1;
                 r.max_distance = FLT_MAX;
                 
@@ -535,7 +576,11 @@ kernel void rtShading(
             {
                 raytracing::ray r;
                 r.origin = position;
-                r.direction = normalize(lightData.directionalLightInvDirection + float3(rng.rand() - 0.5, 0.0, rng.rand() - 0.5) * 0.4);
+                //r.direction = normalize(lightData.directionalLightInvDirection + float3(rng.rand() - 0.5, 0.0, rng.rand() - 0.5) * 0.4);
+                float2 uv = float2(rng.rand(), rng.rand());
+                float3 sample = sampleCone(uv, cos(5.f / 180.0f * M_PI_F));
+                r.direction = alignWithNormal(sample, lightData.directionalLightInvDirection);
+                
                 r.min_distance = 0.1;
                 r.max_distance = FLT_MAX;
                 
@@ -587,9 +632,10 @@ kernel void rtBounce(
             auto position = positions.read(tid).xyz;
             auto normal = directions.read(tid).yzw;
             Loki rng = Loki(tid.x + 1, tid.y + 1, cameraData.frameIndex);
+            uint offset = rng.rand() * 100;
             
             // 构造一个在normal半球内的ray
-            uint skyRayCount = 4;
+            uint skyRayCount = 2;
 
             raytracing::intersector<raytracing::instancing, raytracing::triangle_data> inter;
             inter.assume_geometry_type( raytracing::geometry_type::triangle );
@@ -600,7 +646,16 @@ kernel void rtBounce(
 
                 // 这里需要构造一个基于法线的hemisphere来采样，并且引入重要性分布，使用hottonPattern
                 r.origin = position;
-                r.direction = normalize(float3(rng.rand() - 0.5,rng.rand() - 0.5,rng.rand() - 0.5));
+                //r.direction = normalize(float3(rng.rand() - 0.5,rng.rand() - 0.5,rng.rand() - 0.5));
+                
+//                float2 uv = float2(halton(offset + cameraData.frameIndex, 2 + i * 5 + 3),
+//                           halton(offset + cameraData.frameIndex, 2 + i * 5 + 4));
+                float2 uv = float2(rng.rand(), rng.rand());
+                float3 worldSpaceSampleDirection = sampleCosineWeightedHemisphere(uv);
+                worldSpaceSampleDirection = alignWithNormal(worldSpaceSampleDirection, normal);
+                
+                r.direction = worldSpaceSampleDirection;
+                
                 r.min_distance = 0.1;
                 r.max_distance = FLT_MAX;
                 

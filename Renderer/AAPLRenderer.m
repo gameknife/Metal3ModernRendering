@@ -37,7 +37,7 @@ static const NSUInteger kMaxBuffersInFlight = 3;
 // 3. Modify initializeModelInstances to reference your mesh and set its transform.
 
 // The maximum number of objects in the world (not counting the skybox).37
-static const NSUInteger kMaxInstances = 4;
+static const NSUInteger kMaxInstances = 10;
 
 static const size_t kAlignedInstanceTransformsStructSize = (sizeof(AAPLInstanceTransform) & ~0xFF) + 0x100;
 
@@ -217,7 +217,7 @@ typedef struct ThinGBuffer
 
 - (void)initializeModelInstances
 {
-    NSAssert(kMaxInstances == 4, @"Expected 3 Model Instances");
+    //NSAssert(kMaxInstances == 4, @"Expected 3 Model Instances");
 
     _modelInstances[0].meshIndex = 0;
     _modelInstances[0].position = (vector_float3){0, -5.0f, -40.0f};
@@ -231,13 +231,20 @@ typedef struct ThinGBuffer
     _modelInstances[2].position = (vector_float3){40.0f, 10.0f, -80.0f};
     _modelInstances[2].rotationRad = -60 * M_PI / 180.0f;
     
-//    _modelInstances[2].meshIndex = 1;
-//    _modelInstances[2].position = (vector_float3){-5.0f, -20.75f, -55.0f};
-//    _modelInstances[2].rotationRad = 0.0f;
-    
     _modelInstances[3].meshIndex = 2;
     _modelInstances[3].position = (vector_float3){0.0f, -5.0f, -0.0f};
     _modelInstances[3].rotationRad = -60 * M_PI / 180.0f;
+    
+    for( int i = 4; i < kMaxInstances; i += 2)
+    {
+        _modelInstances[i].meshIndex = 0;
+        _modelInstances[i].position = (vector_float3){-80.0f + 5.0 * (i - 4), -5.0f, -60.0f * (i - 4) -40.0f};
+        _modelInstances[i].rotationRad = -60 * M_PI / 180.0f;
+        
+        _modelInstances[i+1].meshIndex = 0;
+        _modelInstances[i+1].position = (vector_float3){-80.0f + 5.0 * (i - 4), 10.0f, -60.0f * (i - 4) -40.0f};
+        _modelInstances[i+1].rotationRad = -60 * M_PI / 180.0f;
+    }
 }
 
 - (void)resizeRTReflectionMapTo:(CGSize)size
@@ -507,7 +514,7 @@ typedef struct ThinGBuffer
 
     [scene addObject:[AAPLMesh newSphereWithRadius:8.0f onDevice:_device vertexDescriptor:modelIOVertexDescriptor]];
     
-    [scene addObject:[AAPLMesh newPlaneWithDimensions:(vector_float2){400.0f, 400.0f} onDevice:_device vertexDescriptor:modelIOVertexDescriptor]];
+    [scene addObject:[AAPLMesh newPlaneWithDimensions:(vector_float2){800.0f, 800.0f} onDevice:_device vertexDescriptor:modelIOVertexDescriptor]];
     
     _meshes = scene;
     
@@ -782,6 +789,10 @@ typedef struct ThinGBuffer
             pSubmesh->shortIndexType = submesh.metalKitSubmmesh.indexType == MTLIndexTypeUInt32 ? 0 : 1;
             pSubmesh->indices = indexBuffer.buffer.gpuAddress + indexBuffer.offset;
 
+            // material parameters
+            
+            
+            // material textures
             for (NSUInteger m = 0; m < submesh.textures.count; ++m)
             {
                 pSubmesh->materials[m] = submesh.textures[m].gpuResourceID;
@@ -1058,7 +1069,7 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
     // Update Camera Position (and View Matrix):
 
     //vector_float3 camPos = (vector_float3){ cosf( _cameraAngle ) * 10.0f, 5, sinf(_cameraAngle) * 22.5f };
-    vector_float3 camPos = (vector_float3){0,5,30};
+    vector_float3 camPos = (vector_float3){-20,5,30};
     _cameraAngle += (0.02 * _cameraPanSpeedFactor);
     if ( _cameraAngle >= 2 * M_PI )
     {
@@ -1552,7 +1563,7 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
 
 - (matrix_float4x4)projectionMatrixWithAspect:(float)aspect
 {
-    return matrix_perspective_right_hand(45.0f * (M_PI / 180.0f), aspect, 0.1f, 250.0f);
+    return matrix_perspective_right_hand(60.0f * (M_PI / 180.0f), aspect, 0.5f, 1000.0f);
 }
 
 #pragma mark - Event Handling
