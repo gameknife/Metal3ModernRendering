@@ -22,6 +22,10 @@ The header for mesh and submesh objects to use for managing models.
 // before drawing the submesh.  The renderer uses these for higher LODs.
 @property (nonatomic, readonly, nonnull) NSArray<id<MTLTexture>> *textures;
 
+@property simd_float3 baseColor;
+
+@property simd_float3 emissionColor;
+
 @end
 
 // The app-specific mesh class that contains vertex data describing the mesh and

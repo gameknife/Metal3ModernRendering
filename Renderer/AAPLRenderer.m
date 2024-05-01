@@ -192,11 +192,6 @@ typedef struct ThinGBuffer
                 }
             }
         }
-        
-        if ( !createdArgumentBuffers )
-        {
-            [self buildSceneArgumentBufferFromReflectionFunction:_rtReflectionFunction];
-        }
 
         // Call this last to ensure everything else builds.
         [self resizeRTReflectionMapTo:size];
@@ -422,7 +417,7 @@ typedef struct ThinGBuffer
         _rtBouncePipeline = [_device newComputePipelineStateWithFunction:_rtBounceFunction error:&error];
         NSAssert(_rtBouncePipeline, @"Failed to create RT shading compute pipeline state: %@", error);
         
-        _renderMode = RMMetalRaytracing;
+        _renderMode = RMMetalRaytracing2;
     }
     else
     {
@@ -551,155 +546,6 @@ typedef struct ThinGBuffer
 /// 此为METAL3前的build函数
 /// Build an argument buffer with all the  resources for the scene.   The ray-tracing shaders access meshes, submeshes, and materials
 /// through this argument buffer to apply the correct lighting to the calculated reflections.
-- (void)buildSceneArgumentBufferFromReflectionFunction:(nonnull id<MTLFunction>)function
-{
-    MTLResourceOptions storageMode;
-#if TARGET_MACOS
-    storageMode = MTLResourceStorageModeManaged;
-#else
-    storageMode = MTLResourceStorageModeShared;
-#endif
-
-    // Create argument buffer encoders from the scene argument of the ray-tracing reflection function.
-    id<MTLArgumentEncoder> sceneEncoder =
-        [function newArgumentEncoderWithBufferIndex:SceneIndex];
-    
-    id<MTLArgumentEncoder> instanceEncoder =
-        [sceneEncoder newArgumentEncoderForBufferAtIndex:AAPLArgmentBufferIDSceneInstances];
-    
-    id<MTLArgumentEncoder> meshEncoder =
-        [sceneEncoder newArgumentEncoderForBufferAtIndex:AAPLArgumentBufferIDSceneMeshes];
-    
-    id<MTLArgumentEncoder> submeshEncoder =
-        [meshEncoder newArgumentEncoderForBufferAtIndex:AAPLArgmentBufferIDMeshSubmeshes];
-
-    // The renderer builds this structure to match the ray-traced scene structure so the
-    // ray-tracing shader navigates it. In particular, Metal represents each submesh as a
-    // geometry in the primitive acceleration structure.
-
-    NSMutableSet< id<MTLResource> >* sceneResources = [NSMutableSet new];
-
-    NSUInteger instanceArgumentSize = instanceEncoder.encodedLength * kMaxInstances;
-    id<MTLBuffer> instanceArgumentBuffer = [self newBufferWithLabel:@"instanceArgumentBuffer"
-                                                             length:instanceArgumentSize
-                                                            options:storageMode
-                                                          trackedIn:sceneResources];
-    
-    // Encode the instances array in `Scene` (`Scene::instances`).
-    for ( NSUInteger i = 0; i < kMaxInstances; ++i )
-    {
-        [instanceEncoder setArgumentBuffer:instanceArgumentBuffer offset:i * instanceEncoder.encodedLength];
-        
-        typedef struct {
-            uint32_t meshIndex;
-            matrix_float4x4 transform;
-        } InstanceData;
-        
-        InstanceData* pInstanceData = (InstanceData *)[instanceEncoder constantDataAtIndex:0];
-        pInstanceData->meshIndex = _modelInstances[i].meshIndex;
-        pInstanceData->transform = calculateTransform(_modelInstances[i]);
-    }
-    
-#if TARGET_MACOS
-    [instanceArgumentBuffer didModifyRange:NSMakeRange(0, instanceArgumentBuffer.length)];
-#endif
-
-    
-    NSUInteger meshArgumentSize = meshEncoder.encodedLength * _meshes.count;
-    id<MTLBuffer> meshArgumentBuffer = [self newBufferWithLabel:@"meshArgumentBuffer"
-                                                         length:meshArgumentSize
-                                                        options:storageMode
-                                                      trackedIn:sceneResources];
-
-    // Encode the meshes array in `Scene` (`Scene::meshes`).
-    for ( NSUInteger i = 0; i < _meshes.count; ++i )
-    {
-        AAPLMesh* mesh = _meshes[i];
-        [meshEncoder setArgumentBuffer:meshArgumentBuffer offset:i * meshEncoder.encodedLength];
-
-        MTKMesh* metalKitMesh = mesh.metalKitMesh;
-
-        // Set `Mesh::positions`.
-        [meshEncoder setBuffer:metalKitMesh.vertexBuffers[0].buffer
-                        offset:metalKitMesh.vertexBuffers[0].offset
-                       atIndex:AAPLArgmentBufferIDMeshPositions];
-
-        // Set `Mesh::generics`.
-        [meshEncoder setBuffer:metalKitMesh.vertexBuffers[1].buffer
-                        offset:metalKitMesh.vertexBuffers[1].offset
-                       atIndex:AAPLArgmentBufferIDMeshGenerics];
-
-        NSAssert( metalKitMesh.vertexBuffers.count == 2, @"unknown number of buffers!" );
-        [sceneResources addObject:metalKitMesh.vertexBuffers[0].buffer];
-        [sceneResources addObject:metalKitMesh.vertexBuffers[1].buffer];
-        
-        // Build submeshes into a buffer and reference it through a pointer in the mesh.
-
-        NSUInteger submeshArgumentSize = submeshEncoder.encodedLength * mesh.submeshes.count;
-        id<MTLBuffer> submeshArgumentBuffer = [self newBufferWithLabel:[NSString stringWithFormat:@"submeshArgumentBuffer %lu", (unsigned long)i]
-                                                                length:submeshArgumentSize
-                                                               options:storageMode
-                                                             trackedIn:sceneResources];
-
-        for ( NSUInteger j = 0; j < mesh.submeshes.count; ++j )
-        {
-            AAPLSubmesh* submesh = mesh.submeshes[j];
-            [submeshEncoder setArgumentBuffer:submeshArgumentBuffer
-                                       offset:(submeshEncoder.encodedLength * j)];
-
-            // Set `Submesh::indices`.
-            MTKMeshBuffer* indexBuffer = submesh.metalKitSubmmesh.indexBuffer;
-            uint32_t* pIndexType = [submeshEncoder constantDataAtIndex:0];
-            
-            // Encode whether each index is 16-bit or 32-bit wide.
-            *pIndexType = submesh.metalKitSubmmesh.indexType == MTLIndexTypeUInt32 ? 0 : 1;
-            
-            [submeshEncoder setBuffer:indexBuffer.buffer
-                               offset:indexBuffer.offset
-                              atIndex:AAPLArgmentBufferIDSubmeshIndices];
-
-            for (NSUInteger m = 0; m < submesh.textures.count; ++m)
-            {
-                [submeshEncoder setTexture:submesh.textures[m]
-                                   atIndex:AAPLArgmentBufferIDSubmeshMaterials + m];
-            }
-            [sceneResources addObject:submesh.metalKitSubmmesh.indexBuffer.buffer];
-            [sceneResources addObjectsFromArray:submesh.textures];
-
-        }
-
-#if TARGET_MACOS
-        [submeshArgumentBuffer didModifyRange:NSMakeRange(0, submeshArgumentBuffer.length)];
-#endif
-
-        // Set `Mesh::submeshes`.
-        [meshEncoder setBuffer:submeshArgumentBuffer
-                        offset:0
-                       atIndex:AAPLArgmentBufferIDMeshSubmeshes];
-    }
-
-    id<MTLBuffer> sceneArgumentBuffer = [self newBufferWithLabel:@"sceneArgumentBuffer"
-                                                          length:sceneEncoder.encodedLength
-                                                         options:storageMode
-                                                       trackedIn:sceneResources];
-
-    [sceneEncoder setArgumentBuffer:sceneArgumentBuffer offset:0];
-
-    // Set `Scene::instances`.
-    [sceneEncoder setBuffer:instanceArgumentBuffer offset:0 atIndex:AAPLArgmentBufferIDSceneInstances];
-    
-    // Set `Scene::meshes`.
-    [sceneEncoder setBuffer:meshArgumentBuffer offset:0 atIndex:AAPLArgumentBufferIDSceneMeshes];
-
-
-#if TARGET_MACOS
-    [meshArgumentBuffer didModifyRange:NSMakeRange(0, meshArgumentBuffer.length)];
-    [sceneArgumentBuffer didModifyRange:NSMakeRange(0, sceneArgumentBuffer.length)];
-#endif
-
-    _sceneResources = sceneResources;
-    _sceneArgumentBuffer = sceneArgumentBuffer;
-}
 
 - (id<MTLBuffer>)newBufferWithLabel:(NSString *)label length:(NSUInteger)length options:(MTLResourceOptions)options trackedIn:(nonnull NSMutableSet<id<MTLResource>> *)set
 {
@@ -790,7 +636,8 @@ typedef struct ThinGBuffer
             pSubmesh->indices = indexBuffer.buffer.gpuAddress + indexBuffer.offset;
 
             // material parameters
-            
+            pSubmesh->baseColor = submesh.baseColor;
+            pSubmesh->emissionColor = submesh.emissionColor;
             
             // material textures
             for (NSUInteger m = 0; m < submesh.textures.count; ++m)

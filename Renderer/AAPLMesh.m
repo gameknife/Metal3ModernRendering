@@ -11,14 +11,44 @@ The implementation for the mesh and submesh objects.
 #import "AAPLMesh.h"
 #import "AAPLMathUtilities.h"
 #import "AAPLArgumentBufferTypes.h"
+#include <simd/simd.h>
+#import <CoreImage/CoreImage.h>
 
 @implementation AAPLSubmesh
 {
     NSMutableArray<id<MTLTexture>> *_textures;
+    //simd_float3 baseColor;
 }
 
 @synthesize textures = _textures;
 
++ (simd_float3) createFloat3FromMaterial:(nonnull MDLMaterial *)material
+                                  modelIOMaterialSemantic:(MDLMaterialSemantic)materialSemantic
+{
+    id<MTLTexture> texture = nil;
+
+    NSArray<MDLMaterialProperty *> *propertiesWithSemantic
+        = [material propertiesWithSemantic:materialSemantic];
+
+    for (MDLMaterialProperty *property in propertiesWithSemantic)
+    {
+        assert(property.semantic == materialSemantic);
+        
+        if(property.type == MDLMaterialPropertyTypeFloat3)
+        {
+            // fetch base color here
+            return property.float3Value;
+        }
+        if(property.type == MDLMaterialPropertyTypeColor)
+        {
+            CGFloat* components = CGColorGetComponents(property.color);
+            simd_float3 ret = vector3((float)components[0], (float)components[1], (float)components[2]);
+            return property.float3Value;
+        }
+    }
+    
+    return vector3(1.f,1.f,1.f);
+}
 /// Create a Metal texture with the given semantic in the given Model I/O material object.
 + (nonnull id<MTLTexture>) createMetalTextureFromMaterial:(nonnull MDLMaterial *)material
                                   modelIOMaterialSemantic:(MDLMaterialSemantic)materialSemantic
@@ -40,6 +70,13 @@ The implementation for the mesh and submesh objects.
     for (MDLMaterialProperty *property in propertiesWithSemantic)
     {
         assert(property.semantic == materialSemantic);
+        
+        if(property.type == MDLMaterialPropertyTypeFloat3)
+        {
+            // fetch base color here
+            //property.float3Value;
+            continue;
+        }
 
         if(property.type != MDLMaterialPropertyTypeString)
         {
@@ -139,7 +176,12 @@ The implementation for the mesh and submesh objects.
 
         // Set each index in the array with the appropriate material semantic specified in the
         //   submesh's material property.
-
+        _baseColor = [AAPLSubmesh createFloat3FromMaterial:modelIOSubmesh.material
+                                  modelIOMaterialSemantic:MDLMaterialSemanticBaseColor];
+        
+        _emissionColor = [AAPLSubmesh createFloat3FromMaterial:modelIOSubmesh.material
+                                      modelIOMaterialSemantic:MDLMaterialSemanticEmission];
+        
         _textures[AAPLTextureIndexBaseColor] =
             [AAPLSubmesh createMetalTextureFromMaterial:modelIOSubmesh.material
                                 modelIOMaterialSemantic:MDLMaterialSemanticBaseColor

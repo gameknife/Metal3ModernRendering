@@ -19,6 +19,8 @@ def convertMtl(mtlPath):
                 line = line.replace('map_Bump', 'map_bump')
             if 'map_Pr' in line:
                 line = line.replace('map_Pr', 'map_roughness')
+            if 'Ke' in line:
+                line = line.replace('Ke', 'Ka') 
             if '-bm' in line:
                 line = line.replace('-bm 1.000000', '')
             if '.png' in line:

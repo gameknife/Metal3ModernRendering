@@ -132,13 +132,14 @@ float4 equirectangularSample(float3 direction, sampler s, texture2d<float> image
 LightingParameters calculateParameters(ColorInOut in,
                                        AAPLCameraData cameraData,
                                        constant AAPLLightData& lightData,
+                                       float3 baseColor,
                                        texture2d<float>   baseColorMap,
                                        texture2d<float>   metallicMap,
                                        texture2d<float>   roughnessMap,
                                        texture2d<float>   skydomeMap)
 {
     LightingParameters parameters;
-    parameters.baseColor = baseColorMap.sample(linearSampler, in.texCoord.xy * float2(1.f, -1.f) + float2(1.f,1.f));
+    parameters.baseColor = baseColorMap.sample(linearSampler, in.texCoord.xy * float2(1.f, -1.f) + float2(1.f,1.f)) * float4(baseColor, 1.0);
     // the tangent space in not correct, normalmap ignore
     parameters.normal = in.normal;//computeNormalMap(in, normalMap);
     parameters.viewDir = normalize(cameraData.cameraPosition - float3(in.worldPosition));
@@ -268,6 +269,7 @@ fragment float4 fragmentShader(
     LightingParameters params = calculateParameters(in,
                                                     cameraData,
                                                     lightData,
+                                                    pSubmesh->baseColor,
                                                     pSubmesh->materials[AAPLTextureIndexBaseColor],        //colorMap
                                                     //pSubmesh->materials[AAPLTextureIndexNormal],           //normalMap
                                                     pSubmesh->materials[AAPLTextureIndexMetallic],         //metallicMap
@@ -298,7 +300,7 @@ fragment float4 fragmentShader(
         
     }
     params.metalness += cameraData.metallicBias;
-    float4 final_color = float4(skylight * float3((params.baseColor) * (1.0 - params.metalness)) + computeSpecular(params) + li * computeDiffuse(params), 1.0f);
+    float4 final_color = float4(skylight * float3((params.baseColor) * (1.0 - params.metalness)) + computeSpecular(params) + li * computeDiffuse(params), 1.0f) + float4(pSubmesh->emissionColor, 1.0f);
     //float4 final_color = float4((skylight + li * params.nDotl) * mix(params.baseColor.xyz, dot(params.baseColor.xyz, float3(.33)), 0.8), 1.0f);
     //float4 final_color = float4(skylight, 1.0f);
     return final_color;
@@ -536,6 +538,7 @@ kernel void rtShading(
                     LightingParameters params = calculateParameters(colorIn,
                                                                     cd,
                                                                     lightData,
+                                                                    submesh.baseColor,
                                                                     baseColorMap,
                                                                     //normalMap,
                                                                     metallicMap,
@@ -553,12 +556,20 @@ kernel void rtShading(
                     
                     float ndotl_bounce = saturate( dot(normal, r.direction) );
                     
+                    // emission, with attenuion
+                    float mappedDist = intersection.distance;
+                    float atten = max(1.0, mappedDist * 1.0);
+                    float atten2 = atten * atten;
+                    
                     auto intersectionb = inter.intersect( rb, accelerationStructure, 0xFF );
                     if ( intersectionb.type == raytracing::intersection_type::none )
                     {
                         // if not in shadow, accumlate the direct light as bounce, consider light atten
-                        finalIrradiance += lightData.lightIntensity * 1.0 * ndotl_bounce * params.nDotl / (float)skyRayCount;
+                        // should consider the light result
+                        finalIrradiance.xyz += submesh.baseColor * lightData.lightIntensity * 1.0 * ndotl_bounce * params.nDotl / atten / (float)skyRayCount;
                     }
+                    
+                    finalIrradiance.xyz += submesh.emissionColor * ndotl_bounce / atten2 / (float)skyRayCount;
                 }
                 else if ( intersection.type == raytracing::intersection_type::none )
                 {
@@ -838,6 +849,7 @@ kernel void rtReflection(
                 LightingParameters params = calculateParameters(colorIn,
                                                                 cd,
                                                                 lightData,
+                                                                submesh.baseColor,
                                                                 baseColorMap,
                                                                 //normalMap,
                                                                 metallicMap,

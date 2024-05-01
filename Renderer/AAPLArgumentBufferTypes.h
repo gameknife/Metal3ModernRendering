@@ -18,6 +18,8 @@ typedef enum AAPLArgumentBufferID
     AAPLArgmentBufferIDGenericsBitangent,
 
     AAPLArgmentBufferIDSubmeshIndices,
+    AAPLArgmentBufferIDSubmeshBaseColor,
+    AAPLArgmentBufferIDSubmeshEmissisonColor,
     AAPLArgmentBufferIDSubmeshMaterials,
 
     AAPLArgmentBufferIDMeshPositions,
@@ -53,6 +55,10 @@ struct Submesh
     // The indices for the container mesh's position and generics arrays.
     constant uint32_t*                                indices   [[ id( AAPLArgmentBufferIDSubmeshIndices   ) ]];
 
+    // baseColor
+    float3 baseColor;                                           [[ id( AAPLArgmentBufferIDSubmeshBaseColor ) ]];
+    float3 emissionColor;                                           [[ id( AAPLArgmentBufferIDSubmeshEmissisonColor ) ]];
+    
     // The fixed size array of material textures.
     array<texture2d<float>, AAPLMaterialTextureCount> materials [[ id( AAPLArgmentBufferIDSubmeshMaterials ) ]];
 };
@@ -96,7 +102,10 @@ struct Submesh
     
     // Indices for the container mesh's position and generics arrays.
     uint64_t indices;
-
+    
+    // baseColor
+    simd_float3 baseColor;
+    simd_float3 emissionColor;
     // The fixed size array of material textures.
     MTLResourceID materials[AAPLMaterialTextureCount];
 };
