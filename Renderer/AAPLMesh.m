@@ -29,6 +29,13 @@ The implementation for the mesh and submesh objects.
 
     NSArray<MDLMaterialProperty *> *propertiesWithSemantic
         = [material propertiesWithSemantic:materialSemantic];
+    
+    // Load textures with TextureUsageShaderRead and StorageModePrivate.
+    NSDictionary *textureLoaderOptions =
+    @{
+      MTKTextureLoaderOptionTextureUsage       : @(MTLTextureUsageShaderRead),
+      MTKTextureLoaderOptionTextureStorageMode : @(MTLStorageModePrivate)
+      };
 
     for (MDLMaterialProperty *property in propertiesWithSemantic)
     {
@@ -38,13 +45,6 @@ The implementation for the mesh and submesh objects.
         {
             continue;
         }
-
-        // Load textures with TextureUsageShaderRead and StorageModePrivate.
-        NSDictionary *textureLoaderOptions =
-        @{
-          MTKTextureLoaderOptionTextureUsage       : @(MTLTextureUsageShaderRead),
-          MTKTextureLoaderOptionTextureStorageMode : @(MTLStorageModePrivate)
-          };
 
         // Interpret the string as a file path and attempt to load it with
         //   ` -[MTKTextureLoader newTextureWithContentsOfURL:options:error:]`.
@@ -100,15 +100,22 @@ The implementation for the mesh and submesh objects.
         // texture that looks OK when set with the pipeline, or ensure that the pipeline
         // rendering this submesh doesn't require a material with this property.
 
-        [NSException raise:@"Texture data for material property not found"
-                    format:@"Requested material property semantic: %lu string: %@",
-                            materialSemantic, property.stringValue];
+//        [NSException raise:@"Texture data for material property not found"
+//                    format:@"Requested material property semantic: %lu string: %@",
+//                            materialSemantic, property.stringValue];
     }
 
     if (!texture)
     {
-        [NSException raise:@"No appropriate material property from which to create texture"
-                format:@"Requested material property semantic: %lu", materialSemantic];
+//        [NSException raise:@"No appropriate material property from which to create texture"
+//                format:@"Requested material property semantic: %lu", materialSemantic];
+        
+        // load a default one
+        texture = [textureLoader newTextureWithName:@"white"
+                                        scaleFactor:1.0
+                                             bundle:nil
+                                            options:textureLoaderOptions
+                                              error:nil];
     }
 
     return texture;
@@ -196,18 +203,18 @@ The implementation for the mesh and submesh objects.
         return nil;
     }
 
-    [modelIOMesh addNormalsWithAttributeNamed:MDLVertexAttributeNormal
-                       creaseThreshold:0.98];
-
-    // Have Model I/O create the tangents from the mesh texture coordinates and normals.
-    [modelIOMesh addTangentBasisForTextureCoordinateAttributeNamed:MDLVertexAttributeTextureCoordinate
-                                              normalAttributeNamed:MDLVertexAttributeNormal
-                                             tangentAttributeNamed:MDLVertexAttributeTangent];
-
-    // Have Model I/O create bitangents from the mesh texture coordinates and the newly created tangents.
-    [modelIOMesh addTangentBasisForTextureCoordinateAttributeNamed:MDLVertexAttributeTextureCoordinate
-                                             tangentAttributeNamed:MDLVertexAttributeTangent
-                                           bitangentAttributeNamed:MDLVertexAttributeBitangent];
+//    [modelIOMesh addNormalsWithAttributeNamed:MDLVertexAttributeNormal
+//                       creaseThreshold:0.98];
+//
+//    // Have Model I/O create the tangents from the mesh texture coordinates and normals.
+//    [modelIOMesh addTangentBasisForTextureCoordinateAttributeNamed:MDLVertexAttributeTextureCoordinate
+//                                              normalAttributeNamed:MDLVertexAttributeNormal
+//                                             tangentAttributeNamed:MDLVertexAttributeTangent];
+//
+//    // Have Model I/O create bitangents from the mesh texture coordinates and the newly created tangents.
+//    [modelIOMesh addTangentBasisForTextureCoordinateAttributeNamed:MDLVertexAttributeTextureCoordinate
+//                                             tangentAttributeNamed:MDLVertexAttributeTangent
+//                                           bitangentAttributeNamed:MDLVertexAttributeBitangent];
 
     // Assigning a new vertex descriptor to a Model I/O mesh performs a relayout of the vertex
     // data.  In this case, the renderer creates the Model I/O vertex descriptor so that the

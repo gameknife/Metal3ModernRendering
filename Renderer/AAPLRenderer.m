@@ -37,7 +37,7 @@ static const NSUInteger kMaxBuffersInFlight = 3;
 // 3. Modify initializeModelInstances to reference your mesh and set its transform.
 
 // The maximum number of objects in the world (not counting the skybox).37
-static const NSUInteger kMaxInstances = 10;
+static const NSUInteger kMaxInstances = 2;
 
 static const size_t kAlignedInstanceTransformsStructSize = (sizeof(AAPLInstanceTransform) & ~0xFF) + 0x100;
 
@@ -217,34 +217,34 @@ typedef struct ThinGBuffer
 
 - (void)initializeModelInstances
 {
-    //NSAssert(kMaxInstances == 4, @"Expected 3 Model Instances");
+    NSAssert(kMaxInstances == 2, @"Expected 3 Model Instances");
 
     _modelInstances[0].meshIndex = 0;
-    _modelInstances[0].position = (vector_float3){0, -5.0f, -40.0f};
-    _modelInstances[0].rotationRad = -60 * M_PI / 180.0f;
+    _modelInstances[0].position = (vector_float3){0, -1.50f, 0.0f};
+    _modelInstances[0].rotationRad = 0 * M_PI / 180.0f;
 
-    _modelInstances[1].meshIndex = 0;
-    _modelInstances[1].position = (vector_float3){40.0f, -5.0f, -80.0f};
-    _modelInstances[1].rotationRad = -60 * M_PI / 180.0f;
+//    _modelInstances[1].meshIndex = 0;
+//    _modelInstances[1].position = (vector_float3){40.0f, -5.0f, -80.0f};
+//    _modelInstances[1].rotationRad = -60 * M_PI / 180.0f;
+//    
+//    _modelInstances[2].meshIndex = 0;
+//    _modelInstances[2].position = (vector_float3){40.0f, 10.0f, -80.0f};
+//    _modelInstances[2].rotationRad = -60 * M_PI / 180.0f;
     
-    _modelInstances[2].meshIndex = 0;
-    _modelInstances[2].position = (vector_float3){40.0f, 10.0f, -80.0f};
-    _modelInstances[2].rotationRad = -60 * M_PI / 180.0f;
+    _modelInstances[1].meshIndex = 2;
+    _modelInstances[1].position = (vector_float3){0.0f, -1.50f, 0.0f};
+    _modelInstances[1].rotationRad = 0 * M_PI / 180.0f;
     
-    _modelInstances[3].meshIndex = 2;
-    _modelInstances[3].position = (vector_float3){0.0f, -5.0f, -0.0f};
-    _modelInstances[3].rotationRad = -60 * M_PI / 180.0f;
-    
-    for( int i = 4; i < kMaxInstances; i += 2)
-    {
-        _modelInstances[i].meshIndex = 0;
-        _modelInstances[i].position = (vector_float3){-80.0f + 5.0 * (i - 4), -5.0f, -60.0f * (i - 4) -40.0f};
-        _modelInstances[i].rotationRad = -60 * M_PI / 180.0f;
-        
-        _modelInstances[i+1].meshIndex = 0;
-        _modelInstances[i+1].position = (vector_float3){-80.0f + 5.0 * (i - 4), 10.0f, -60.0f * (i - 4) -40.0f};
-        _modelInstances[i+1].rotationRad = -60 * M_PI / 180.0f;
-    }
+//    for( int i = 4; i < kMaxInstances; i += 2)
+//    {
+//        _modelInstances[i].meshIndex = 0;
+//        _modelInstances[i].position = (vector_float3){-80.0f + 5.0 * (i - 4), -5.0f, -60.0f * (i - 4) -40.0f};
+//        _modelInstances[i].rotationRad = -60 * M_PI / 180.0f;
+//        
+//        _modelInstances[i+1].meshIndex = 0;
+//        _modelInstances[i+1].position = (vector_float3){-80.0f + 5.0 * (i - 4), 10.0f, -60.0f * (i - 4) -40.0f};
+//        _modelInstances[i+1].rotationRad = -60 * M_PI / 180.0f;
+//    }
 }
 
 - (void)resizeRTReflectionMapTo:(CGSize)size
@@ -501,7 +501,7 @@ typedef struct ThinGBuffer
     modelIOVertexDescriptor.attributes[AAPLVertexAttributeTexcoord].name  = MDLVertexAttributeTextureCoordinate;
     modelIOVertexDescriptor.attributes[AAPLVertexAttributeNormal].name    = MDLVertexAttributeNormal;
 
-    NSURL *modelFileURL = [[NSBundle mainBundle] URLForResource:@"Models/test.obj"
+    NSURL *modelFileURL = [[NSBundle mainBundle] URLForResource:@"Models/livingroom.obj"
                                                   withExtension:nil];
 
     NSAssert(modelFileURL, @"Could not find model (%@) file in bundle creating specular texture", modelFileURL.absoluteString);
@@ -514,7 +514,7 @@ typedef struct ThinGBuffer
 
     [scene addObject:[AAPLMesh newSphereWithRadius:8.0f onDevice:_device vertexDescriptor:modelIOVertexDescriptor]];
     
-    [scene addObject:[AAPLMesh newPlaneWithDimensions:(vector_float2){800.0f, 800.0f} onDevice:_device vertexDescriptor:modelIOVertexDescriptor]];
+    [scene addObject:[AAPLMesh newPlaneWithDimensions:(vector_float2){80.0f, 80.0f} onDevice:_device vertexDescriptor:modelIOVertexDescriptor]];
     
     _meshes = scene;
     
@@ -1022,7 +1022,7 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
 - (void)updateCameraState
 {
     AAPLLightData* pLightData = (AAPLLightData *)(_lightDataBuffer.contents);
-    pLightData->directionalLightInvDirection = -vector_normalize((vector_float3){ cosf(_cameraAngle) * 6.0 , -4, sinf(_cameraAngle) * 6.0 });
+    pLightData->directionalLightInvDirection = -vector_normalize((vector_float3){ cosf(_cameraAngle) * 6.0 , -3, sinf(_cameraAngle) * 6.0 });
     pLightData->lightIntensity = 5.0f;
     
     // Determine next safe slot:
@@ -1069,7 +1069,7 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
     // Update Camera Position (and View Matrix):
 
     //vector_float3 camPos = (vector_float3){ cosf( _cameraAngle ) * 10.0f, 5, sinf(_cameraAngle) * 22.5f };
-    vector_float3 camPos = (vector_float3){-20,5,30};
+    vector_float3 camPos = (vector_float3){0,0,6.5};
     _cameraAngle += (0.02 * _cameraPanSpeedFactor);
     if ( _cameraAngle >= 2 * M_PI )
     {

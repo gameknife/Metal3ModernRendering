@@ -17,6 +17,7 @@ using namespace metal;
 
 constant float PI = 3.1415926535897932384626433832795;
 constant float kMaxHDRValue = 500.0f;
+constant float rayGap = 0.005;
 
 typedef struct
 {
@@ -137,18 +138,18 @@ LightingParameters calculateParameters(ColorInOut in,
                                        texture2d<float>   skydomeMap)
 {
     LightingParameters parameters;
-    parameters.baseColor = baseColorMap.sample(linearSampler, in.texCoord.xy);
+    parameters.baseColor = baseColorMap.sample(linearSampler, in.texCoord.xy * float2(1.f, -1.f) + float2(1.f,1.f));
     // the tangent space in not correct, normalmap ignore
     parameters.normal = in.normal;//computeNormalMap(in, normalMap);
     parameters.viewDir = normalize(cameraData.cameraPosition - float3(in.worldPosition));
-    parameters.roughness = mix(0.01,1.0,roughnessMap.sample(linearSampler, in.texCoord.xy).x);
-    parameters.metalness = max(metallicMap.sample(linearSampler, in.texCoord.xy).x, 0.1);
+    parameters.roughness = 1.0;//mix(0.01,1.0,roughnessMap.sample(linearSampler, in.texCoord.xy).x);
+    parameters.metalness = 0.0;//max(metallicMap.sample(linearSampler, in.texCoord.xy).x, 0.1);
     parameters.ambientOcclusion = 1.0;//ambientOcclusionMap.sample(linearSampler, in.texCoord.xy).x;
     parameters.reflectedVector = reflect(-parameters.viewDir, parameters.normal);
     
-    constexpr sampler linearFilterSampler(coord::normalized, address::clamp_to_edge, filter::linear);
-    float3 c = equirectangularSample(parameters.reflectedVector, linearFilterSampler, skydomeMap).rgb;
-    parameters.irradiatedColor = clamp(c, 0.f, kMaxHDRValue);
+//    constexpr sampler linearFilterSampler(coord::normalized, address::clamp_to_edge, filter::linear);
+//    float3 c = equirectangularSample(parameters.reflectedVector, linearFilterSampler, skydomeMap).rgb;
+//    parameters.irradiatedColor = clamp(c, 0.f, kMaxHDRValue);
 
     parameters.lightDir = lightData.directionalLightInvDirection;
     parameters.nDotl = max(0.001f,saturate(dot(parameters.normal, parameters.lightDir)));
@@ -353,7 +354,7 @@ fragment ThinGBufferOut gBufferFragmentShader(ColorInOut in [[stage_in]],
     }
     
     // Then the motion vector is simply the difference between the two
-    out.direction = float4(length(in.viewPosition), in.normal);
+    out.direction = float4(length(in.viewPosition), normalize(in.normal));
     out.motionVector = motionVector;
     
     return out;
@@ -450,7 +451,7 @@ kernel void rtShading(
                 
                 r.direction = worldSpaceSampleDirection;
                 
-                r.min_distance = 0.1;
+                r.min_distance = rayGap;
                 r.max_distance = FLT_MAX;
                 
                 // 在半球内发射射线
@@ -547,7 +548,7 @@ kernel void rtShading(
 
                     rb.origin = colorIn.worldPosition;
                     rb.direction = normalize(lightData.directionalLightInvDirection);
-                    rb.min_distance = 0.1;
+                    rb.min_distance = rayGap;
                     rb.max_distance = FLT_MAX;
                     
                     float ndotl_bounce = saturate( dot(normal, r.direction) );
@@ -575,13 +576,13 @@ kernel void rtShading(
             for( uint i = 0; i < sunRayCount; ++i)
             {
                 raytracing::ray r;
-                r.origin = position;
+                r.origin = position + normal * rayGap;
                 //r.direction = normalize(lightData.directionalLightInvDirection + float3(rng.rand() - 0.5, 0.0, rng.rand() - 0.5) * 0.4);
                 float2 uv = float2(rng.rand(), rng.rand());
-                float3 sample = sampleCone(uv, cos(5.f / 180.0f * M_PI_F));
+                float3 sample = sampleCone(uv, cos(1.f / 180.0f * M_PI_F));
                 r.direction = alignWithNormal(sample, lightData.directionalLightInvDirection);
                 
-                r.min_distance = 0.1;
+                r.min_distance = 0.0;
                 r.max_distance = FLT_MAX;
                 
                 auto intersection = inter.intersect( r, accelerationStructure, 0xFF );
@@ -656,7 +657,7 @@ kernel void rtBounce(
                 
                 r.direction = worldSpaceSampleDirection;
                 
-                r.min_distance = 0.1;
+                r.min_distance = rayGap;
                 r.max_distance = FLT_MAX;
                 
                 // 在半球内发射射线
