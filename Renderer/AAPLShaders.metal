@@ -102,6 +102,29 @@ float Distribution(float NdotH, float roughness)
     return roughnessSqr / (PI * d * d);
 }
 
+float2 EnvBRDFApproxLazarov(float Roughness, float NoV)
+{
+    // [ Lazarov 2013, "Getting More Physical in Call of Duty: Black Ops II" ]
+    // Adaptation to fit our G term.
+    const float4 c0 = { -1, -0.0275, -0.572, 0.022 };
+    const float4 c1 = { 1, 0.0425, 1.04, -0.04 };
+    float4 r = Roughness * c0 + c1;
+    float a004 = min(r.x * r.x, exp2(-9.28 * NoV)) * r.x + r.y;
+    float2 AB = float2(-1.04, 1.04) * a004 + r.zw;
+    return AB;
+}
+
+float3 EnvBRDFApprox( float3 SpecularColor, float Roughness, float NoV )
+{
+    float2 AB = EnvBRDFApproxLazarov(Roughness, NoV);
+
+    // Anything less than 2% is physically impossible and is instead considered to be shadowing
+    // Note: this is needed for the 'specular' show flag to work, since it uses a SpecularColor of 0
+    float F90 = saturate( 50.0 * SpecularColor.g );
+
+    return SpecularColor * AB.x + F90 * AB.y;
+}
+
 float3 computeSpecular(LightingParameters parameters)
 {
     float specularRoughness = saturate( parameters.roughness * (1.0 - parameters.metalness) + parameters.metalness );
@@ -115,6 +138,9 @@ float3 computeSpecular(LightingParameters parameters)
 
     float3 specularOutput = (Ds * Gs * Fs * parameters.irradiatedColor) * (1.0 + parameters.metalness * float3(parameters.baseColor))
     + float3(parameters.metalness) * parameters.irradiatedColor * float3(parameters.baseColor);
+    
+//    float3 specularOutput = (Ds * Gs * Fs * parameters.irradiatedColor) * (1.0 + parameters.metalness * float3(parameters.baseColor))
+//    + float3(parameters.metalness) * parameters.irradiatedColor;
 
     return specularOutput * parameters.ambientOcclusion;
 }
@@ -133,17 +159,19 @@ LightingParameters calculateParameters(ColorInOut in,
                                        AAPLCameraData cameraData,
                                        constant AAPLLightData& lightData,
                                        float3 baseColor,
+                                       float roughness,
+                                       float metallic,
                                        texture2d<float>   baseColorMap,
                                        texture2d<float>   metallicMap,
-                                       texture2d<float>   roughnessMap,
-                                       texture2d<float>   skydomeMap)
+                                       texture2d<float>   roughnessMap
+                                       )
 {
     LightingParameters parameters;
     parameters.baseColor = baseColorMap.sample(linearSampler, in.texCoord.xy * float2(1.f, -1.f) + float2(1.f,1.f)) * float4(baseColor, 1.0);
     // the tangent space in not correct, normalmap ignore
     parameters.normal = in.normal;//computeNormalMap(in, normalMap);
     parameters.viewDir = normalize(cameraData.cameraPosition - float3(in.worldPosition));
-    parameters.roughness = 1.0;//mix(0.01,1.0,roughnessMap.sample(linearSampler, in.texCoord.xy).x);
+    parameters.roughness = roughness;//mix(0.01,1.0,roughnessMap.sample(linearSampler, in.texCoord.xy).x);
     parameters.metalness = 0.0;//max(metallicMap.sample(linearSampler, in.texCoord.xy).x, 0.1);
     parameters.ambientOcclusion = 1.0;//ambientOcclusionMap.sample(linearSampler, in.texCoord.xy).x;
     parameters.reflectedVector = reflect(-parameters.viewDir, parameters.normal);
@@ -270,12 +298,14 @@ fragment float4 fragmentShader(
                                                     cameraData,
                                                     lightData,
                                                     pSubmesh->baseColor,
+                                                    pSubmesh->roughness,
+                                                    pSubmesh->metallic,
                                                     pSubmesh->materials[AAPLTextureIndexBaseColor],        //colorMap
                                                     //pSubmesh->materials[AAPLTextureIndexNormal],           //normalMap
                                                     pSubmesh->materials[AAPLTextureIndexMetallic],         //metallicMap
-                                                    pSubmesh->materials[AAPLTextureIndexRoughness],        //roughnessMap
+                                                    pSubmesh->materials[AAPLTextureIndexRoughness]        //roughnessMap
                                                     //pSubmesh->materials[AAPLTextureIndexAmbientOcclusion], //ambientOcclusionMap
-                                                    skydomeMap);
+                                                    );
     float3 skylight = params.ambientOcclusion * 0.1;
     float li = lightData.lightIntensity;
     params.roughness += cameraData.roughnessBias;
@@ -283,37 +313,27 @@ fragment float4 fragmentShader(
 
     if ( is_raytracing_enabled )
     {
-        //uint8_t mipLevel = params.roughness * rtReflections.get_num_mip_levels();
-        //float3 reflectedColor = rtReflections.sample(colorSampler, screenTexcoord, level(mipLevel)).xyz;
-
-        //float hasReflection = (dot( reflectedColor.rgb, float3(1,1,1) ) > 0.0);
-        //params.irradiatedColor = mix(params.irradiatedColor, reflectedColor.rgb, hasReflection);
-        
-        
         float4 gi = rtShadings.sample(colorSampler, screenTexcoord).xyzw;
         li *= gi.y;
         
-        params.irradiatedColor = 0;//reflectedColor.rgb * reflectedColor.rgb * gi.x;
+        float3 reflectedColor = rtReflections.sample(colorSampler, screenTexcoord, level(0)).xyz;
+        params.reflectedColor = reflectedColor * EnvBRDFApprox(float3(0.04), params.roughness, params.nDotv);
+        params.irradiatedColor = 0;//reflectedColor * gi.x;
         
         float4 irr = rtIrrandiance.sample(colorSampler, screenTexcoord).xyzw;
         skylight *= irr.xyz * 5.0;
         
     }
     params.metalness += cameraData.metallicBias;
-    float4 final_color = float4(skylight * float3((params.baseColor) * (1.0 - params.metalness)) + computeSpecular(params) + li * computeDiffuse(params), 1.0f) + float4(pSubmesh->emissionColor, 1.0f);
+    float4 final_color = float4(skylight * float3((params.baseColor) * (1.0 - params.metalness)) + computeSpecular(params) + li * computeDiffuse(params), 1.0f) + float4(pSubmesh->emissionColor + params.reflectedColor, 1.0f);
     //float4 final_color = float4((skylight + li * params.nDotl) * mix(params.baseColor.xyz, dot(params.baseColor.xyz, float3(.33)), 0.8), 1.0f);
-    //float4 final_color = float4(skylight, 1.0f);
+    //float4 final_color = float4(params.reflectedColor, 1.0);
+    //float4 gi = rtShadings.sample(colorSampler, screenTexcoord).xyzw;
+    //final_color = gi.x;
     return final_color;
 }
 
-//fragment float4 reflectionShader(ColorInOut in [[stage_in]],
-//                                 texture2d<float> rtReflections [[texture(AAPLTextureIndexReflections)]])
-//{
-//    float2 screenTexcoord = calculateScreenCoord( in.currPosition );
-//    float4 reflectedColor = rtReflections.sample(linearSampler, screenTexcoord, level(0));
-//    reflectedColor.a = 1.0;
-//    return reflectedColor;
-//}
+
 
 fragment float4 irradianceShader(ColorInOut in [[stage_in]],
                                  texture2d<float>            rtShadings            [[ texture(AAPLTextureIndexGI)]],
@@ -334,19 +354,32 @@ struct ThinGBufferOut
 };
 
 fragment ThinGBufferOut gBufferFragmentShader(ColorInOut in [[stage_in]],
-                                              constant AAPLCameraData&    cameraData            [[ buffer(BufferIndexCameraData) ]])
+                                              constant AAPLCameraData&    cameraData            [[ buffer(BufferIndexCameraData) ]],
+                                              constant AAPLLightData&     lightData             [[ buffer(BufferIndexLightData) ]],
+                                              constant AAPLSubmeshKeypath&submeshKeypath        [[ buffer(BufferIndexSubmeshKeypath)]],
+                                              constant Scene*             pScene                [[ buffer(SceneIndex)]])
 {
+    constant Mesh* pMesh = &(pScene->meshes[ pScene->instances[submeshKeypath.instanceID].meshIndex ]);
+    constant Submesh* pSubmesh = &(pMesh->submeshes[submeshKeypath.submeshID]);
+    LightingParameters params = calculateParameters(in,
+                                                    cameraData,
+                                                    lightData,
+                                                    pSubmesh->baseColor,
+                                                    pSubmesh->roughness,
+                                                    pSubmesh->metallic,
+                                                    pSubmesh->materials[AAPLTextureIndexBaseColor],        //colorMap
+                                                    //pSubmesh->materials[AAPLTextureIndexNormal],           //normalMap
+                                                    pSubmesh->materials[AAPLTextureIndexMetallic],         //metallicMap
+                                                    pSubmesh->materials[AAPLTextureIndexRoughness]        //roughnessMap
+                                                    //pSubmesh->materials[AAPLTextureIndexAmbientOcclusion], //ambientOcclusionMap
+                                                    );
     ThinGBufferOut out;
 
-    out.position = float4(in.worldPosition, 1.0);
+    out.position = float4(in.worldPosition, params.roughness);
   
     float2 motionVector = 0.0f;
     if (cameraData.frameIndex > 0) {
-        //float2 uv = in.position.xy / float2(cameraData.width, cameraData.height);
         float2 uv = in.currPosition.xy / in.currPosition.w * float2(0.5f, -0.5f) + float2(0.5f,0.5f);
-        
-        // Unproject the position from the previous frame then transform it from
-        // NDC space to 0..1
         float2 prevUV = in.prevPosition.xy / in.prevPosition.w * float2(0.5f, -0.5f) + float2(0.5f,0.5f);
         
         uv -= cameraData.jitter;
@@ -442,27 +475,24 @@ kernel void rtShading(
                 raytracing::ray r;
 
                 // 这里需要构造一个基于法线的hemisphere来采样，并且引入重要性分布，使用hottonPattern
-                r.origin = position;
+                r.origin = position + normal * rayGap;
+                float3 traceNormal = normal;
                 
                 //r.direction = normalize(float3(rng.rand() - 0.5,rng.rand() - 0.5,rng.rand() - 0.5));
-//                float2 uv = float2(halton(offset + cameraData.frameIndex, 2 + i * 5 + 3),
-//                           halton(offset + cameraData.frameIndex, 2 + i * 5 + 4));
+
                 float2 uv = float2(rng.rand(), rng.rand());
                 float3 worldSpaceSampleDirection = sampleCosineWeightedHemisphere(uv);
-                worldSpaceSampleDirection = alignWithNormal(worldSpaceSampleDirection, normal);
+                worldSpaceSampleDirection = alignWithNormal(worldSpaceSampleDirection, traceNormal);
                 
                 r.direction = worldSpaceSampleDirection;
                 
-                r.min_distance = rayGap;
+                r.min_distance = 0;
                 r.max_distance = FLT_MAX;
                 
                 // 在半球内发射射线
                 auto intersection = inter.intersect( r, accelerationStructure, 0xFF );
                 if ( intersection.type == raytracing::intersection_type::triangle )
                 {
-                    // 打到了, 取一次反弹
-                    hit += 1.0;
-                    
                     float2 bary2 = intersection.triangle_barycentric_coord;
                     float3 bary3 = float3( 1.0 - (bary2.x + bary2.y), bary2.x, bary2.y );
 
@@ -539,12 +569,14 @@ kernel void rtShading(
                                                                     cd,
                                                                     lightData,
                                                                     submesh.baseColor,
+                                                                    submesh.roughness,
+                                                                    submesh.metallic,
                                                                     baseColorMap,
                                                                     //normalMap,
                                                                     metallicMap,
-                                                                    roughnessMap,
+                                                                    roughnessMap
                                                                     //ambientOcclusionMap,
-                                                                    skydomeMap);
+                                                                    );
                     
                     // check if in shadow
                     raytracing::ray rb;
@@ -573,6 +605,9 @@ kernel void rtShading(
                 }
                 else if ( intersection.type == raytracing::intersection_type::none )
                 {
+                    // 打到了, 取一次反弹
+                    hit += 1.0;
+                    
                     // 没打到, 取天光
                     constexpr sampler linearFilterSampler(coord::normalized, address::clamp_to_edge, filter::linear);
                     float3 c = equirectangularSample( r.direction, linearFilterSampler, skydomeMap ).rgb;
@@ -642,7 +677,9 @@ kernel void rtBounce(
         }
         else
         {
-            auto position = positions.read(tid).xyz;
+            auto rawdata = positions.read(tid).xyzw;
+            auto position = rawdata.xyz;
+            float roughness = rawdata.w;
             auto normal = directions.read(tid).yzw;
             Loki rng = Loki(tid.x + 1, tid.y + 1, cameraData.frameIndex);
             
@@ -694,7 +731,7 @@ kernel void rtBounce(
                 r.origin = position;
                 float2 uv = float2(rng.rand(), rng.rand());
                 // this cone radius is roughness tageted
-                float3 sample = sampleCone(uv, cos(2.0f / 180.0f * M_PI_F));
+                float3 sample = sampleCone(uv, cos(max(0.01f, roughness * 30.f) / 180.0f * M_PI_F));
                 
                 float3 v = normalize(position - cameraData.cameraPosition);
                 auto refl = reflect( v, normal );
@@ -709,6 +746,10 @@ kernel void rtBounce(
                 {
                     // 打到了, 从上一次的反弹结果取颜色
                     auto worldPosition = r.origin + r.direction * intersection.distance;
+                    
+                    constant Instance& instance = pScene->instances[ intersection.instance_id ];
+                    constant Mesh* pMesh = &(pScene->meshes[instance.meshIndex]);
+                    constant Submesh & submesh = pMesh->submeshes[ intersection.geometry_id ];
                     
                     // 从worldPosition计算出采样坐标
                     auto hpos = cameraData.projectionMatrix * cameraData.viewMatrix * float4(worldPosition, 1.0);
@@ -725,10 +766,10 @@ kernel void rtBounce(
                                                        min_filter::nearest);
                         
                         float3 targetpos = positions.sample(posSampler, screenTexcoord).xyz;
-                        if( distance(targetpos, worldPosition) < 0.5 )
+                        if( distance(targetpos, worldPosition) < 0.1 )
                         {
-                            float4 gi = irradiance.sample(colorSampler, screenTexcoord).xyzw;
-                            finalColor += gi / (float)specularRayCount;
+                            float3 specular = irradiance.sample(colorSampler, screenTexcoord).xyz * submesh.baseColor;
+                            finalColor.xyz += specular / (float)specularRayCount;
                         }
                     }
                 }

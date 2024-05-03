@@ -125,6 +125,7 @@ typedef struct ThinGBuffer
     MPSSVGFDefaultTextureAllocator *_textureAllocator;
     MPSSVGFDenoiser *_denoiser;
     MPSSVGFDenoiser *_denoiserIrr;
+    MPSSVGFDenoiser *_denoiserRefl;
     MPSTemporalAA *_TAA;
     
     ThinGBuffer _thinGBuffer;
@@ -158,6 +159,8 @@ typedef struct ThinGBuffer
         _denoiser.bilateralFilterIterations = 2;
         _denoiserIrr = [[MPSSVGFDenoiser alloc] initWithSVGF:svgf textureAllocator:_textureAllocator];
         _denoiserIrr.bilateralFilterIterations = 5;
+        _denoiserRefl = [[MPSSVGFDenoiser alloc] initWithSVGF:svgf textureAllocator:_textureAllocator];
+        _denoiserRefl.bilateralFilterIterations = 5;
     
 
     // Create the temporal antialiasing object
@@ -632,6 +635,8 @@ typedef struct ThinGBuffer
             // material parameters
             pSubmesh->baseColor = submesh.baseColor;
             pSubmesh->emissionColor = submesh.emissionColor;
+            pSubmesh->roughness = submesh.roughness;
+            pSubmesh->metallic = submesh.metallic;
             
             // material textures
             for (NSUInteger m = 0; m < submesh.textures.count; ++m)
@@ -1158,6 +1163,7 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
         // compute kernel that ray traces mirror-like reflections from this data.
         id <MTLTexture> denoisedTexture;
         id <MTLTexture> denoisedIrr;
+        id <MTLTexture> denoisedRefl;
         
         if ( _renderMode > 0  )
         {
@@ -1168,12 +1174,12 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
             
             MTLRenderPassDescriptor* gbufferPass = [MTLRenderPassDescriptor new];
             gbufferPass.colorAttachments[0].loadAction = MTLLoadActionClear;
-            gbufferPass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
+            gbufferPass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0);
             gbufferPass.colorAttachments[0].storeAction = MTLStoreActionStore;
             gbufferPass.colorAttachments[0].texture = _thinGBuffer.positionTexture;
 
             gbufferPass.colorAttachments[1].loadAction = MTLLoadActionClear;
-            gbufferPass.colorAttachments[1].clearColor = MTLClearColorMake(0, 0, 0, 1);
+            gbufferPass.colorAttachments[1].clearColor = MTLClearColorMake(0, 0, 0, 0);
             gbufferPass.colorAttachments[1].storeAction = MTLStoreActionStore;
             gbufferPass.colorAttachments[1].texture = depthNormalTexture;
             
@@ -1242,6 +1248,14 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
                                                                motionVectorTexture:_thinGBuffer.motionVectorTexture
                                                                 depthNormalTexture:_thinGBuffer.depthNormalTexture
                                                         previousDepthNormalTexture:_thinGBuffer.PrevDepthNormalTexture];
+                
+                denoisedRefl = [_denoiserRefl encodeToCommandBuffer:commandBuffer
+                                                                     sourceTexture:_rtReflectionMap
+                                                               motionVectorTexture:_thinGBuffer.motionVectorTexture
+                                                                depthNormalTexture:_thinGBuffer.depthNormalTexture
+                                                        previousDepthNormalTexture:_thinGBuffer.PrevDepthNormalTexture];
+//
+//                [_denoiserIrr encodeToCommandBuffer:commandBuffer sourceTexture:_rtBounceMap destinationTexture:&denoisedIrr sourceTexture2:_rtReflectionMap destinationTexture2:&denoisedRefl motionVectorTexture:_thinGBuffer.motionVectorTexture depthNormalTexture:_thinGBuffer.depthNormalTexture previousDepthNormalTexture:_thinGBuffer.PrevDepthNormalTexture];
             }
             else
             {
@@ -1250,6 +1264,7 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
                                                                motionVectorTexture:_thinGBuffer.motionVectorTexture
                                                                 depthNormalTexture:_thinGBuffer.depthNormalTexture
                                                         previousDepthNormalTexture:_thinGBuffer.PrevDepthNormalTexture];
+
             }
 
             
@@ -1293,7 +1308,7 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
         [renderEncoder setDepthStencilState:_depthState];
         if ( _renderMode > 0 )
         {
-            [renderEncoder setFragmentTexture:_rtReflectionMap atIndex:AAPLTextureIndexReflections];
+            [renderEncoder setFragmentTexture:denoisedRefl atIndex:AAPLTextureIndexReflections];
             [renderEncoder setFragmentTexture:denoisedTexture atIndex:AAPLTextureIndexGI];
             [renderEncoder setFragmentTexture:denoisedIrr atIndex:AAPLTextureIndexIrrGI];
         }
@@ -1349,28 +1364,8 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
         [commandBuffer popDebugGroup];
         
         id <MTLTexture> AATexture = compositeTexture;
-//        if(false)
-//        {
-//            [commandBuffer pushDebugGroup:@"TAA"];
-//            
-//            if (_frameCount > 0) {
-//                AATexture = [_textureAllocator textureWithPixelFormat:MTLPixelFormatRG11B10Float width:_size.width height:_size.height];
-//            
-//                [_TAA encodeToCommandBuffer:commandBuffer
-//                              sourceTexture:compositeTexture
-//                            previousTexture:_rawColorMap
-//                         destinationTexture:AATexture
-//                        motionVectorTexture:_thinGBuffer.motionVectorTexture
-//                               depthTexture:_thinGBuffer.depthNormalTexture];
-//                
-//                [_textureAllocator returnTexture:compositeTexture];
-//            }
-//            
-//            [commandBuffer popDebugGroup];
-//        }
-//        if(_rawColorMap)
-//            [_textureAllocator returnTexture:_rawColorMap];
-        
+        if(_rawColorMap)
+            [_textureAllocator returnTexture:_rawColorMap];
         _rawColorMap = AATexture;
  
         // Merge the postprocessing results with the scene rendering.
@@ -1415,6 +1410,7 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
 {
     [_denoiser releaseTemporaryTextures];
     [_denoiserIrr releaseTemporaryTextures];
+    [_denoiserRefl releaseTemporaryTextures];
     [_textureAllocator reset];
     
     float aspect = size.width / (float)size.height;

@@ -2,6 +2,7 @@
 # map_Pm -> map_metallic
 # map_Bump -> map_bump
 # map_Pr -> map_roughness
+# Pr x -> roughness x x x
 # remove -bm x
 # remove file extension from texture file names
 
@@ -27,6 +28,10 @@ def convertMtl(mtlPath):
                 line = line.replace('.png', '')
             if '.jpg' in line:
                 line = line.replace('.jpg', '')
+            # process roughness, from Pr x to roughness x x x, strip the \n
+            if 'Pr' in line:
+                roughness = line.split(' ')[1].strip()
+                line = 'roughness ' + roughness + ' ' + roughness + ' ' + roughness + '\n'
             f.write(line)
 
 if __name__ == '__main__':

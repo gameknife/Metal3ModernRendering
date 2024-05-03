@@ -17,7 +17,6 @@ The implementation for the mesh and submesh objects.
 @implementation AAPLSubmesh
 {
     NSMutableArray<id<MTLTexture>> *_textures;
-    //simd_float3 baseColor;
 }
 
 @synthesize textures = _textures;
@@ -25,8 +24,6 @@ The implementation for the mesh and submesh objects.
 + (simd_float3) createFloat3FromMaterial:(nonnull MDLMaterial *)material
                                   modelIOMaterialSemantic:(MDLMaterialSemantic)materialSemantic
 {
-    id<MTLTexture> texture = nil;
-
     NSArray<MDLMaterialProperty *> *propertiesWithSemantic
         = [material propertiesWithSemantic:materialSemantic];
 
@@ -41,9 +38,11 @@ The implementation for the mesh and submesh objects.
         }
         if(property.type == MDLMaterialPropertyTypeColor)
         {
-            CGFloat* components = CGColorGetComponents(property.color);
-            simd_float3 ret = vector3((float)components[0], (float)components[1], (float)components[2]);
             return property.float3Value;
+        }
+        if(property.type == MDLMaterialPropertyTypeFloat)
+        {
+            return property.floatValue;
         }
     }
     
@@ -181,6 +180,12 @@ The implementation for the mesh and submesh objects.
         
         _emissionColor = [AAPLSubmesh createFloat3FromMaterial:modelIOSubmesh.material
                                       modelIOMaterialSemantic:MDLMaterialSemanticEmission];
+        
+        _roughness = [AAPLSubmesh createFloat3FromMaterial:modelIOSubmesh.material
+                                   modelIOMaterialSemantic:MDLMaterialSemanticRoughness].x;
+        
+        _metallic = [AAPLSubmesh createFloat3FromMaterial:modelIOSubmesh.material
+                                   modelIOMaterialSemantic:MDLMaterialSemanticMetallic].x;
         
         _textures[AAPLTextureIndexBaseColor] =
             [AAPLSubmesh createMetalTextureFromMaterial:modelIOSubmesh.material

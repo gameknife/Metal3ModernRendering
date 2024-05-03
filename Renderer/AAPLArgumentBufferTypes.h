@@ -20,6 +20,9 @@ typedef enum AAPLArgumentBufferID
     AAPLArgmentBufferIDSubmeshIndices,
     AAPLArgmentBufferIDSubmeshBaseColor,
     AAPLArgmentBufferIDSubmeshEmissisonColor,
+    AAPLArgmentBufferIDSubmeshRoughness,
+    AAPLArgmentBufferIDSubmeshMetallic,
+
     AAPLArgmentBufferIDSubmeshMaterials,
 
     AAPLArgmentBufferIDMeshPositions,
@@ -58,7 +61,8 @@ struct Submesh
     // baseColor
     float3 baseColor;                                           [[ id( AAPLArgmentBufferIDSubmeshBaseColor ) ]];
     float3 emissionColor;                                           [[ id( AAPLArgmentBufferIDSubmeshEmissisonColor ) ]];
-    
+    float roughness;                                            [[ id( AAPLArgmentBufferIDSubmeshRoughness ) ]];
+    float metallic;                                             [[ id( AAPLArgmentBufferIDSubmeshMetallic ) ]];
     // The fixed size array of material textures.
     array<texture2d<float>, AAPLMaterialTextureCount> materials [[ id( AAPLArgmentBufferIDSubmeshMaterials ) ]];
 };
@@ -106,6 +110,8 @@ struct Submesh
     // baseColor
     simd_float3 baseColor;
     simd_float3 emissionColor;
+    float roughness;
+    float metallic;
     // The fixed size array of material textures.
     MTLResourceID materials[AAPLMaterialTextureCount];
 };

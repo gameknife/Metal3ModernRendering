@@ -26,6 +26,10 @@ The header for mesh and submesh objects to use for managing models.
 
 @property simd_float3 emissionColor;
 
+@property float roughness;
+
+@property float metallic;
+
 @end
 
 // The app-specific mesh class that contains vertex data describing the mesh and
