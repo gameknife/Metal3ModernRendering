@@ -160,7 +160,7 @@ typedef struct ThinGBuffer
         _denoiserIrr = [[MPSSVGFDenoiser alloc] initWithSVGF:svgf textureAllocator:_textureAllocator];
         _denoiserIrr.bilateralFilterIterations = 5;
         _denoiserRefl = [[MPSSVGFDenoiser alloc] initWithSVGF:svgf textureAllocator:_textureAllocator];
-        _denoiserRefl.bilateralFilterIterations = 5;
+        _denoiserRefl.bilateralFilterIterations = 2;
     
 
     // Create the temporal antialiasing object
@@ -218,7 +218,7 @@ typedef struct ThinGBuffer
     NSAssert(kMaxInstances == 2, @"Expected 3 Model Instances");
 
     _modelInstances[0].meshIndex = 0;
-    _modelInstances[0].position = (vector_float3){0, -1.50f, 0.0f};
+    _modelInstances[0].position = (vector_float3){0, 0, 0.0f};
     _modelInstances[0].rotationRad = 0 * M_PI / 180.0f;
 
 //    _modelInstances[1].meshIndex = 0;
@@ -230,7 +230,7 @@ typedef struct ThinGBuffer
 //    _modelInstances[2].rotationRad = -60 * M_PI / 180.0f;
     
     _modelInstances[1].meshIndex = 2;
-    _modelInstances[1].position = (vector_float3){0.0f, -1.50f, 0.0f};
+    _modelInstances[1].position = (vector_float3){0.0f, -1000.01f, 0.0f};
     _modelInstances[1].rotationRad = 0 * M_PI / 180.0f;
     
 //    for( int i = 4; i < kMaxInstances; i += 2)
@@ -493,8 +493,7 @@ typedef struct ThinGBuffer
     modelIOVertexDescriptor.attributes[AAPLVertexAttributeTexcoord].name  = MDLVertexAttributeTextureCoordinate;
     modelIOVertexDescriptor.attributes[AAPLVertexAttributeNormal].name    = MDLVertexAttributeNormal;
 
-    NSURL *modelFileURL = [[NSBundle mainBundle] URLForResource:@"Models/livingroom.obj"
-                                                  withExtension:nil];
+    NSURL *modelFileURL = [[NSBundle mainBundle] URLForResource:@"Models/livingroom.obj" withExtension:nil];
 
     NSAssert(modelFileURL, @"Could not find model (%@) file in bundle creating specular texture", modelFileURL.absoluteString);
 
@@ -867,6 +866,26 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
 
 - (void)updateCameraState
 {
+    // cornellbox
+//    _projectionMatrix = matrix_perspective_right_hand(30.0f * (M_PI / 180.0f), (_size.width / _size.height), 0.5f, 1000.0f);
+//    vector_float3 camPos = (vector_float3){0,1.0,6.5};
+//    vector_float3 camTarget = (vector_float3){0,1.0,6.5 - 1};
+    
+    // living room
+    _projectionMatrix = matrix_perspective_right_hand(60.0f * (M_PI / 180.0f), (_size.width / _size.height), 0.5f, 1000.0f);
+    vector_float3 camPos = (vector_float3){0,1.5,6.5};
+    vector_float3 camTarget = (vector_float3){0,1.5,6.5 - 1};
+    
+    // refltest
+//    _projectionMatrix = matrix_perspective_right_hand(60.0f * (M_PI / 180.0f), (_size.width / _size.height), 0.5f, 1000.0f);
+//    vector_float3 camPos = (vector_float3){-45,5,9};
+//    vector_float3 camTarget = (vector_float3){-45 + 20,4.9,0};
+    
+    
+//    vector_float3 camPos = (vector_float3){2.4,0.8,4.1};
+//    vector_float3 camTarget = (vector_float3){2.4 - 1,0.9,4.1 - 0.7};
+    vector_float3 camUp = (vector_float3){0,1,0};
+    
     AAPLLightData* pLightData = (AAPLLightData *)(_lightDataBuffer.contents);
     pLightData->directionalLightInvDirection = -vector_normalize((vector_float3){ cosf(_cameraAngle) * 6.0 , -3, sinf(_cameraAngle) * 6.0 });
     pLightData->lightIntensity = 50.0f;
@@ -915,7 +934,7 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
     // Update Camera Position (and View Matrix):
 
     //vector_float3 camPos = (vector_float3){ cosf( _cameraAngle ) * 10.0f, 5, sinf(_cameraAngle) * 22.5f };
-    vector_float3 camPos = (vector_float3){0,0,6.5};
+
     _cameraAngle += (0.02 * _cameraPanSpeedFactor);
     if ( _cameraAngle >= 2 * M_PI )
     {
@@ -923,7 +942,7 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
     }
 
     pCameraData->prevViewMatrix = pPrevCameraData->viewMatrix;
-    pCameraData->viewMatrix = matrix4x4_translation( -camPos );
+    pCameraData->viewMatrix = matrix_look_at_right_hand(camPos, camTarget, camUp);
     pCameraData->prevCameraPosition = pPrevCameraData->cameraPosition;
     pCameraData->cameraPosition = camPos;
     pCameraData->metallicBias = _metallicBias;
@@ -1417,7 +1436,7 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
     _projectionMatrix = [self projectionMatrixWithAspect:aspect];
 
     // The passed-in size is already in backing coordinates.
-    [self resizeRTReflectionMapTo:view.bounds.size];
+    [self resizeRTReflectionMapTo:CGSizeMake(size.width / 2, size.height / 2)];
     //[self resizeRTReflectionMapTo:size];
     
     _frameCount = 0;

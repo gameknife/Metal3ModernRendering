@@ -32,6 +32,10 @@ def convertMtl(mtlPath):
             if 'Pr' in line:
                 roughness = line.split(' ')[1].strip()
                 line = 'roughness ' + roughness + ' ' + roughness + ' ' + roughness + '\n'
+            if 'Pm' in line:
+                metal = line.split(' ')[1].strip()
+                line = 'metallic ' + metal + ' ' + metal + ' ' + metal + '\n'
+                
             f.write(line)
 
 if __name__ == '__main__':

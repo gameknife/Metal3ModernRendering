@@ -138,9 +138,6 @@ float3 computeSpecular(LightingParameters parameters)
 
     float3 specularOutput = (Ds * Gs * Fs * parameters.irradiatedColor) * (1.0 + parameters.metalness * float3(parameters.baseColor))
     + float3(parameters.metalness) * parameters.irradiatedColor * float3(parameters.baseColor);
-    
-//    float3 specularOutput = (Ds * Gs * Fs * parameters.irradiatedColor) * (1.0 + parameters.metalness * float3(parameters.baseColor))
-//    + float3(parameters.metalness) * parameters.irradiatedColor;
 
     return specularOutput * parameters.ambientOcclusion;
 }
@@ -172,7 +169,7 @@ LightingParameters calculateParameters(ColorInOut in,
     parameters.normal = in.normal;//computeNormalMap(in, normalMap);
     parameters.viewDir = normalize(cameraData.cameraPosition - float3(in.worldPosition));
     parameters.roughness = roughness;//mix(0.01,1.0,roughnessMap.sample(linearSampler, in.texCoord.xy).x);
-    parameters.metalness = 0.0;//max(metallicMap.sample(linearSampler, in.texCoord.xy).x, 0.1);
+    parameters.metalness = metallic;//max(metallicMap.sample(linearSampler, in.texCoord.xy).x, 0.1);
     parameters.ambientOcclusion = 1.0;//ambientOcclusionMap.sample(linearSampler, in.texCoord.xy).x;
     parameters.reflectedVector = reflect(-parameters.viewDir, parameters.normal);
     
@@ -318,7 +315,7 @@ fragment float4 fragmentShader(
         
         float3 reflectedColor = rtReflections.sample(colorSampler, screenTexcoord, level(0)).xyz;
         params.reflectedColor = reflectedColor * EnvBRDFApprox(float3(0.04), params.roughness, params.nDotv);
-        params.irradiatedColor = 0;//reflectedColor * gi.x;
+        params.irradiatedColor = 0;//gi.y;//reflectedColor * gi.x;
         
         float4 irr = rtIrrandiance.sample(colorSampler, screenTexcoord).xyzw;
         skylight *= irr.xyz * 5.0;
@@ -463,7 +460,7 @@ kernel void rtShading(
             Loki rng = Loki(tid.x + 1, tid.y + 1, cameraData.frameIndex);
             
             // 构造一个在normal半球内的ray
-            uint skyRayCount = 8;
+            uint skyRayCount = 6;
             uint sunRayCount = 1;
             
             float hit = 0.0;
@@ -598,7 +595,7 @@ kernel void rtShading(
                     {
                         // if not in shadow, accumlate the direct light as bounce, consider light atten
                         // should consider the light result
-                        finalIrradiance.xyz += submesh.baseColor * lightData.lightIntensity * 1.0 * ndotl_bounce * params.nDotl / atten / (float)skyRayCount;
+                        finalIrradiance.xyz += submesh.baseColor * (1.0 - submesh.metallic) * lightData.lightIntensity * 1.0 * ndotl_bounce * params.nDotl / atten / (float)skyRayCount;
                     }
                     
                     finalIrradiance.xyz += submesh.emissionColor * ndotl_bounce / atten2 / (float)skyRayCount;
@@ -657,6 +654,7 @@ kernel void rtBounce(
              texture2d< float >                     irradiance              [[texture(IrradianceMapIndex)]],
              texture2d< float >                     positions               [[texture(ThinGBufferPositionIndex)]],
              texture2d< float >                     directions              [[texture(ThinGBufferDirectionIndex)]],
+             texture2d< float >                     skydomeMap              [[texture(AAPLSkyDomeTexture)]],
              constant AAPLInstanceTransform*        instanceTransforms      [[buffer(BufferIndexInstanceTransforms)]],
              constant AAPLCameraData&               cameraData              [[buffer(BufferIndexCameraData)]],
              constant AAPLLightData&                lightData               [[buffer(BufferIndexLightData)]],
@@ -684,7 +682,7 @@ kernel void rtBounce(
             Loki rng = Loki(tid.x + 1, tid.y + 1, cameraData.frameIndex);
             
             // 构造一个在normal半球内的ray
-            uint skyRayCount = 4;
+            uint skyRayCount = 2;
 
             raytracing::intersector<raytracing::instancing, raytracing::triangle_data> inter;
             inter.assume_geometry_type( raytracing::geometry_type::triangle );
@@ -711,6 +709,10 @@ kernel void rtBounce(
                     // 打到了, 从上一次的反弹结果取颜色
                     auto worldPosition = r.origin + r.direction * intersection.distance;
                     
+                    constant Instance& instance = pScene->instances[ intersection.instance_id ];
+                    constant Mesh* pMesh = &(pScene->meshes[instance.meshIndex]);
+                    constant Submesh & submesh = pMesh->submeshes[ intersection.geometry_id ];
+                    
                     // 从worldPosition计算出采样坐标
                     auto hpos = cameraData.projectionMatrix * cameraData.viewMatrix * float4(worldPosition, 1.0);
                     auto screenTexcoord = calculateScreenCoord(hpos);
@@ -718,20 +720,20 @@ kernel void rtBounce(
                     constexpr sampler colorSampler(mip_filter::linear,
                                                    mag_filter::linear,
                                                    min_filter::linear);
-                    float4 gi = irradiance.sample(colorSampler, screenTexcoord).xyzw * 0.5;// 衰减为0.5
+                    float3 bounceColor = irradiance.sample(colorSampler, screenTexcoord).xyz * submesh.baseColor.xyz * 0.5;// 衰减为0.5
                     // 这里hpos有可能是在实际像素的后方，应该在用depth检查一下
-                    finalIrradiance += gi / (float)skyRayCount;
+                    finalIrradiance.xyz += bounceColor / (float)skyRayCount;
                 }
             }
             
-            uint specularRayCount = 2;
+            uint specularRayCount = 1;
             for( uint i = 0; i < specularRayCount; ++i)
             {
                 raytracing::ray r;
                 r.origin = position;
                 float2 uv = float2(rng.rand(), rng.rand());
                 // this cone radius is roughness tageted
-                float3 sample = sampleCone(uv, cos(max(0.01f, roughness * 30.f) / 180.0f * M_PI_F));
+                float3 sample = sampleCone(uv, cos(max(0.001f, roughness * 30.f) / 180.0f * M_PI_F));
                 
                 float3 v = normalize(position - cameraData.cameraPosition);
                 auto refl = reflect( v, normal );
@@ -776,6 +778,9 @@ kernel void rtBounce(
                 else if ( intersection.type == raytracing::intersection_type::none )
                 {
                     // 没打到
+                    constexpr sampler linearFilterSampler(coord::normalized, address::clamp_to_edge, filter::linear);
+                    float3 c = equirectangularSample( r.direction, linearFilterSampler, skydomeMap ).rgb;
+                    finalColor += float4( clamp( c, 0.0f, kMaxHDRValue ), 1.0f) / (float)specularRayCount;
                 }
             }
         }
