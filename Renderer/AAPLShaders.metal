@@ -15,6 +15,38 @@ The Metal shaders and kernels.
 
 using namespace metal;
 
+constant unsigned int primes[] = {
+    2,   3,  5,  7,
+    11, 13, 17, 19,
+    23, 29, 31, 37,
+    41, 43, 47, 53,
+    59, 61, 67, 71,
+    73, 79, 83, 89
+};
+
+// Returns the i'th element of the Halton sequence using the d'th prime number as a
+// base. The Halton sequence is a low discrepency sequence: the values appear
+// random, but are more evenly distributed than a purely random sequence. Each random
+// value used to render the image uses a different independent dimension, `d`,
+// and each sample (frame) uses a different index `i`. To decorrelate each pixel,
+// you can apply a random offset to `i`.
+float halton(unsigned int i, unsigned int d) {
+    unsigned int b = primes[d];
+
+    float f = 1.0f;
+    float invB = 1.0f / b;
+
+    float r = 0;
+
+    while (i > 0) {
+        f = f * invB;
+        r = r + f * (i % b);
+        i = i / b;
+    }
+
+    return r;
+}
+
 constant float PI = 3.1415926535897932384626433832795;
 constant float kMaxHDRValue = 500.0f;
 constant float rayGap = 0.005;
@@ -459,7 +491,7 @@ kernel void rtShading(
             Loki rng = Loki(tid.x + 1, tid.y + 1, cameraData.frameIndex);
             
             // 构造一个在normal半球内的ray
-            uint skyRayCount = 6;
+            uint skyRayCount = 1;
             uint sunRayCount = 1;
             
             float hit = 0.0;
@@ -594,7 +626,7 @@ kernel void rtShading(
                     {
                         // if not in shadow, accumlate the direct light as bounce, consider light atten
                         // should consider the light result
-                        finalIrradiance.xyz += submesh.baseColor * (1.0 - submesh.metallic) * lightData.lightIntensity * 1.0 * ndotl_bounce * params.nDotl / atten / (float)skyRayCount;
+                        finalIrradiance.xyz += params.baseColor.xyz * (1.0 - params.metalness) * lightData.lightIntensity * params.nDotl / atten / (float)skyRayCount;
                     }
                     
                     finalIrradiance.xyz += submesh.emissionColor * ndotl_bounce / atten2 / (float)skyRayCount;
@@ -681,7 +713,7 @@ kernel void rtBounce(
             Loki rng = Loki(tid.x + 1, tid.y + 1, cameraData.frameIndex);
             
             // 构造一个在normal半球内的ray
-            uint skyRayCount = 2;
+            uint skyRayCount = 1;
 
             raytracing::intersector<raytracing::instancing, raytracing::triangle_data> inter;
             inter.assume_geometry_type( raytracing::geometry_type::triangle );
@@ -795,6 +827,7 @@ kernel void rtGroundTruth(
              texture2d< float, access::write >      outImage                [[texture(OutImageIndex)]],
              texture2d< float >                     positions               [[texture(ThinGBufferPositionIndex)]],
              texture2d< float >                     directions              [[texture(ThinGBufferDirectionIndex)]],
+             texture2d< float >                     skydomeMap              [[texture(AAPLSkyDomeTexture)]],
              constant AAPLInstanceTransform*        instanceTransforms      [[buffer(BufferIndexInstanceTransforms)]],
              constant AAPLCameraData&               cameraData              [[buffer(BufferIndexCameraData)]],
              constant AAPLLightData&                lightData               [[buffer(BufferIndexLightData)]],
@@ -808,20 +841,205 @@ kernel void rtGroundTruth(
     if ( tid.x < w&& tid.y < h )
     {
         float4 finalColor = float4( 0.0, 0.0, 0.0, 1.0 );
+        float3 lightColor = float3(20,20,20);
+        float3 color = float3(1,1,1);
 
         auto rawdata = positions.read(tid).xyzw;
-        auto position = rawdata.xyz;
+        auto positionBase = rawdata.xyz;
         float roughness = rawdata.w;
-        auto normal = directions.read(tid).yzw;
+        auto normalBase = directions.read(tid).yzw;
         
-        //impl a ground truth path tracing algo, dont consider performance at all.
+        Loki rng = Loki(tid.x + 1, tid.y + 1, cameraData.frameIndex);
+        float random = rng.rand() * (w*h);
         
-        // a simple startup with ndotl
-        float ndotl = dot(normal, lightData.directionalLightInvDirection);
+        uint spp = 1;
         
-        finalColor.xyz = float3(ndotl);
-        
-        outImage.write( finalColor, tid );
+        uint counter = 0;
+        for( uint s = 0; s < spp; s += 1  )
+        {
+            // 构造一个在normal半球内的ray
+            uint bounceCount = 3;
+
+            raytracing::intersector<raytracing::instancing, raytracing::triangle_data> inter;
+            inter.assume_geometry_type( raytracing::geometry_type::triangle );
+            
+            raytracing::ray r;
+
+            // 这里需要构造一个基于法线的hemisphere来采样，并且引入重要性分布，使用hottonPattern
+            float3 traceNormal = normalBase;
+            r.origin = positionBase + traceNormal * rayGap;
+            float2 uv = float2( halton(cameraData.frameIndex + random, counter),
+                                halton(cameraData.frameIndex + random, counter+1));
+            counter += 2;
+            
+            float3 worldSpaceSampleDirection = sampleCosineWeightedHemisphere(uv);
+            worldSpaceSampleDirection = alignWithNormal(worldSpaceSampleDirection, traceNormal);
+            r.direction = worldSpaceSampleDirection;
+            r.min_distance = 0;
+            r.max_distance = FLT_MAX;
+            
+            // 一种物理的ray启动方式
+            const float2 pixel = float2(tid.x + 0.0, h - tid.y + 0.0);
+            const float2 lensuv = (pixel / float2(w,h)) * 2.0 - 1.0;
+            
+            //float2 offset = Camera.Aperture/2 * RandomInUnitDisk(Ray.RandomSeed);
+            float2 offset = float2(0.0);
+            float4 origin = cameraData.invViewMatrix * float4(offset, 0, 1);
+            float4 target = cameraData.invProjectionMatrix * (float4(lensuv.x, lensuv.y, 1, 1));
+            float4 direction = cameraData.invViewMatrix * float4(normalize(target.xyz * 5.0 - float3(offset, 0)), 0);
+
+            r.origin = origin.xyz;
+            r.direction = direction.xyz;
+            
+            for( uint i = 0; i < bounceCount; ++i)
+            {
+                // 在半球内发射射线
+                auto intersection = inter.intersect( r, accelerationStructure, 0xFF );
+                if ( intersection.type == raytracing::intersection_type::triangle )
+                {
+                    float2 bary2 = intersection.triangle_barycentric_coord;
+                    float3 bary3 = float3( 1.0 - (bary2.x + bary2.y), bary2.x, bary2.y );
+
+                    constant Instance& instance = pScene->instances[ intersection.instance_id ];
+                    constant Mesh* pMesh = &(pScene->meshes[instance.meshIndex]);
+                    constant Submesh & submesh = pMesh->submeshes[ intersection.geometry_id ];
+                    
+                    uint32_t i0, i1, i2;
+                    
+                    if ( submesh.shortIndexType )
+                    {
+                        constant uint16_t* pIndices = (constant uint16_t *)submesh.indices;
+                        i0 = pIndices[ intersection.primitive_id * 3 + 0];
+                        i1 = pIndices[ intersection.primitive_id * 3 + 1];
+                        i2 = pIndices[ intersection.primitive_id * 3 + 2];
+                    }
+                    else
+                    {
+                        constant uint32_t* pIndices = (constant uint32_t *)submesh.indices;
+                        i0 = pIndices[ intersection.primitive_id * 3 + 0];
+                        i1 = pIndices[ intersection.primitive_id * 3 + 1];
+                        i2 = pIndices[ intersection.primitive_id * 3 + 2];
+                    }
+
+                    float4x4 mv = instance.transform;
+                    half3x3 normalMx = half3x3(half3(mv.columns[0].xyz), half3(mv.columns[1].xyz), half3(mv.columns[2].xyz));
+
+                    // Normal
+
+                    half3 n0 = pMesh->generics[i0].normal.xyz;
+                    half3 n1 = pMesh->generics[i1].normal.xyz;
+                    half3 n2 = pMesh->generics[i2].normal.xyz;
+
+                    half3 n = (n0 * bary3.x) + (n1 * bary3.y) + (n2 * bary3.z);
+                    n = normalize(normalMx * n);
+
+                    // Texcoords
+
+                    float2 tc0 = pMesh->generics[i0].texcoord.xy;
+                    float2 tc1 = pMesh->generics[i1].texcoord.xy;
+                    float2 tc2 = pMesh->generics[i2].texcoord.xy;
+
+                    float2 texcoord = (tc0 * bary3.x) + (tc1 * bary3.y) + (tc2 * bary3.z);
+
+                    // World Position:
+
+                    packed_float3 wp0 = pMesh->positions[i0].xyz;
+                    packed_float3 wp1 = pMesh->positions[i1].xyz;
+                    packed_float3 wp2 = pMesh->positions[i2].xyz;
+
+                    packed_float3 worldPosition = (wp0 * bary3.x) + (wp1 * bary3.y) + (wp2 * bary3.z);
+
+                    // Prepare structures for shading:
+                    
+                    ColorInOut colorIn = {};
+                    colorIn.worldPosition = worldPosition;
+                    colorIn.normal = float3(n);
+                    colorIn.texCoord = texcoord;
+
+                    texture2d< float > baseColorMap        = submesh.materials[AAPLTextureIndexBaseColor];        //colorMap
+                    texture2d< float > metallicMap         = submesh.materials[AAPLTextureIndexMetallic];      //metallicMap
+                    texture2d< float > roughnessMap        = submesh.materials[AAPLTextureIndexRoughness];        //roughnessMap
+
+                    // For shading, adjust the camera position and the world position to
+                    // correctly account for reflections in reflections (noticeable on the
+                    // sphere's reflection environment map). This is because to correctly
+                    // sample the environment map, the shader needs to take into account that
+                    // the ray starts from the thin G-Buffer, not from the camera.
+                    AAPLCameraData cd( cameraData );
+                    cd.cameraPosition = r.origin;
+                    colorIn.worldPosition = r.origin + r.direction * intersection.distance;
+                    
+                    LightingParameters params = calculateParameters(colorIn,
+                                                                    cd,
+                                                                    lightData,
+                                                                    submesh.baseColor,
+                                                                    submesh.roughness,
+                                                                    submesh.metallic,
+                                                                    baseColorMap,
+                                                                    //normalMap,
+                                                                    metallicMap,
+                                                                    roughnessMap
+                                                                    //ambientOcclusionMap,
+                                                                    );
+                    
+                    // check if in shadow
+                    raytracing::ray rb;
+
+                    rb.origin = colorIn.worldPosition + colorIn.normal * rayGap;
+                    rb.direction = normalize(lightData.directionalLightInvDirection);
+                    rb.min_distance = 0;
+                    rb.max_distance = FLT_MAX;
+                    
+                    color *= params.baseColor.xyz;
+                    lightColor *= params.nDotl;
+                    // emission, with attenuion
+                    float mappedDist = intersection.distance;
+                    float atten = max(1.0, mappedDist * 1.0);
+                    float atten2 = atten * atten;
+                    
+                    auto intersectionb = inter.intersect( rb, accelerationStructure, 0xFF );
+                    if ( intersectionb.type == raytracing::intersection_type::none )
+                    {
+                        // if not in shadow, accumlate the direct light as bounce, consider light atten
+                        // should consider the light result
+                        finalColor.xyz += color * lightColor;//* ndotl_bounce;
+                    }
+                    
+                    // if hit emitter, stop here and accumulate the light
+                    float ndotl_bounce = saturate( dot(traceNormal, r.direction) );
+                    float lum = dot(submesh.emissionColor, float3(.33,.33,.33));
+                    if(lum > 0.1)
+                    {
+                        finalColor.xyz += color * submesh.emissionColor * ndotl_bounce / atten2;
+                        break;
+                    }
+                    
+                    
+                    // recalc ray
+                    
+                    traceNormal = colorIn.normal;
+                    r.origin = rb.origin + traceNormal * rayGap;
+                    float2 uv = float2( halton(cameraData.frameIndex + random, counter),
+                                        halton(cameraData.frameIndex + random, counter+1));
+                    counter += 2;
+                    float3 worldSpaceSampleDirection = sampleCosineWeightedHemisphere(uv);
+                    worldSpaceSampleDirection = alignWithNormal(worldSpaceSampleDirection, traceNormal);
+                    r.direction = worldSpaceSampleDirection;
+                }
+                else if ( intersection.type == raytracing::intersection_type::none )
+                {
+                    // 没打到, 取天光
+                    constexpr sampler linearFilterSampler(coord::normalized, address::clamp_to_edge, filter::linear);
+                    float3 c = equirectangularSample( r.direction, linearFilterSampler, skydomeMap ).rgb;
+                    finalColor.xyz += color * clamp( c, 0.0f, kMaxHDRValue );
+                    
+                    break;
+                }
+            }
+            
+        }
+     
+        outImage.write( finalColor / (float)spp, tid );
     }
 }
 

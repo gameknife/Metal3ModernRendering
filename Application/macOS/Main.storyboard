@@ -723,7 +723,7 @@
                                                 <segment label="FWD"/>
                                                 <segment label="RT" selected="YES" tag="1"/>
                                                 <segment label="RT2"/>
-                                                <segment label="Irr."/>
+                                                <segment label="GT"/>
                                             </segments>
                                         </segmentedCell>
                                         <connections>

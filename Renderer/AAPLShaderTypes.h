@@ -89,7 +89,9 @@ typedef struct AAPLInstanceTransform
 typedef struct AAPLCameraData
 {
     matrix_float4x4 projectionMatrix;
+    matrix_float4x4 invProjectionMatrix;
     matrix_float4x4 viewMatrix;
+    matrix_float4x4 invViewMatrix;
     vector_float3 cameraPosition;
     float metallicBias;
     float roughnessBias;

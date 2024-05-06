@@ -155,18 +155,16 @@ typedef struct ThinGBuffer
     // throughout and across frames
     _textureAllocator = [[MPSSVGFDefaultTextureAllocator alloc] initWithDevice:_device];
     
-    
-        MPSSVGF *svgf = [[MPSSVGF alloc] initWithDevice:_device];
-        svgf.channelCount = 3;
-        svgf.temporalWeighting = MPSTemporalWeightingExponentialMovingAverage;
-        svgf.temporalReprojectionBlendFactor = 0.1f;
-        _denoiser = [[MPSSVGFDenoiser alloc] initWithSVGF:svgf textureAllocator:_textureAllocator];
-        _denoiser.bilateralFilterIterations = 2;
-        _denoiserIrr = [[MPSSVGFDenoiser alloc] initWithSVGF:svgf textureAllocator:_textureAllocator];
-        _denoiserIrr.bilateralFilterIterations = 5;
-        _denoiserRefl = [[MPSSVGFDenoiser alloc] initWithSVGF:svgf textureAllocator:_textureAllocator];
-        _denoiserRefl.bilateralFilterIterations = 2;
-    
+    MPSSVGF *svgf = [[MPSSVGF alloc] initWithDevice:_device];
+    svgf.channelCount = 3;
+    svgf.temporalWeighting = MPSTemporalWeightingExponentialMovingAverage;
+    svgf.temporalReprojectionBlendFactor = 0.1f;
+    _denoiser = [[MPSSVGFDenoiser alloc] initWithSVGF:svgf textureAllocator:_textureAllocator];
+    _denoiser.bilateralFilterIterations = 2;
+    _denoiserIrr = [[MPSSVGFDenoiser alloc] initWithSVGF:svgf textureAllocator:_textureAllocator];
+    _denoiserIrr.bilateralFilterIterations = 5;
+    _denoiserRefl = [[MPSSVGFDenoiser alloc] initWithSVGF:svgf textureAllocator:_textureAllocator];
+    _denoiserRefl.bilateralFilterIterations = 2;
 
     // Create the temporal antialiasing object
     _TAA = [[MPSTemporalAA alloc] initWithDevice:_device];
@@ -936,6 +934,7 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
     
     pCameraData->prevProjectionMatrix = pPrevCameraData->projectionMatrix;
     pCameraData->projectionMatrix = projectionMatrix;
+    pCameraData->invProjectionMatrix = simd_inverse(projectionMatrix);
     pCameraData->prev_jitter = pPrevCameraData->jitter;
     pCameraData->jitter = jitter * vector2(0.5f, -0.5f);
     pCameraData->width = _size.width;
@@ -953,6 +952,7 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
 
     pCameraData->prevViewMatrix = pPrevCameraData->viewMatrix;
     pCameraData->viewMatrix = matrix_look_at_right_hand(camPos, camTarget, camUp);
+    pCameraData->invViewMatrix = simd_inverse(pCameraData->viewMatrix);
     pCameraData->prevCameraPosition = pPrevCameraData->cameraPosition;
     pCameraData->cameraPosition = camPos;
     pCameraData->metallicBias = _metallicBias;
@@ -1331,7 +1331,7 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
         
         // Encode the forward pass.
         
-        id <MTLTexture> compositeTexture = [_textureAllocator textureWithPixelFormat:MTLPixelFormatRG11B10Float width:_size.width * 2.0 height:_size.height * 2.0];
+        id <MTLTexture> compositeTexture = [_textureAllocator textureWithPixelFormat:MTLPixelFormatRG11B10Float width:_size.width height:_size.height];
         
         MTLRenderPassDescriptor* rpd = view.currentRenderPassDescriptor;
         id<MTLTexture> drawableTexture = rpd.colorAttachments[0].texture;
@@ -1440,7 +1440,15 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
             [renderEncoder pushDebugGroup:@"后处理曝光"];
             [renderEncoder setRenderPipelineState:_postMergePipeline];
             [renderEncoder setFragmentBytes:&_exposure length:sizeof(float) atIndex:0];
-            [renderEncoder setFragmentTexture:_rawColorMap atIndex:0];
+            if(_renderMode == RMReflectionsOnly)
+            {
+                [renderEncoder setFragmentTexture:denoisedIrr atIndex:0];
+            }
+            else
+            {
+                [renderEncoder setFragmentTexture:_rawColorMap atIndex:0];
+            }
+            
             [renderEncoder drawPrimitives:MTLPrimitiveTypeTriangle
                               vertexStart:0
                               vertexCount:6];
@@ -1477,7 +1485,7 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
     _projectionMatrix = [self projectionMatrixWithAspect:aspect];
 
     // The passed-in size is already in backing coordinates.
-    [self resizeRTReflectionMapTo:CGSizeMake(size.width / 2, size.height / 2)];
+    [self resizeRTReflectionMapTo:CGSizeMake(size.width, size.height)];
     //[self resizeRTReflectionMapTo:size];
     
     _frameCount = 0;
