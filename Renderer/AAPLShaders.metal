@@ -333,7 +333,6 @@ fragment float4 fragmentShader(
 
 
 fragment float4 irradianceShader(ColorInOut in [[stage_in]],
-                                 texture2d<float>            rtShadings            [[ texture(AAPLTextureIndexGI)]],
                                  texture2d<float>            rtIrrandiance         [[ texture(AAPLTextureIndexIrrGI)]])
 {
     float2 screenTexcoord = calculateScreenCoord( in.currPosition );
@@ -792,9 +791,8 @@ kernel void rtBounce(
 }
 
 
-kernel void rtCombine(
+kernel void rtGroundTruth(
              texture2d< float, access::write >      outImage                [[texture(OutImageIndex)]],
-             texture2d< float >                     irradiance              [[texture(IrradianceMapIndex)]],
              texture2d< float >                     positions               [[texture(ThinGBufferPositionIndex)]],
              texture2d< float >                     directions              [[texture(ThinGBufferDirectionIndex)]],
              constant AAPLInstanceTransform*        instanceTransforms      [[buffer(BufferIndexInstanceTransforms)]],
@@ -810,16 +808,20 @@ kernel void rtCombine(
     if ( tid.x < w&& tid.y < h )
     {
         float4 finalColor = float4( 0.0, 0.0, 0.0, 1.0 );
-        float4 finalIrradiance = float4( 0.0, 0.0, 0.0, 1.0 );
-                    
-//        constexpr sampler colorSampler(mip_filter::linear,
-//                                       mag_filter::linear,
-//                                       min_filter::linear);
-//        float4 gi = irradiance.sample(colorSampler, screenTexcoord).xyzw * 0.1;// 衰减为0.2
-//        
-//        finalIrradiance += gi / (float)skyRayCount;
 
-        outImage.write( finalIrradiance, tid );
+        auto rawdata = positions.read(tid).xyzw;
+        auto position = rawdata.xyz;
+        float roughness = rawdata.w;
+        auto normal = directions.read(tid).yzw;
+        
+        //impl a ground truth path tracing algo, dont consider performance at all.
+        
+        // a simple startup with ndotl
+        float ndotl = dot(normal, lightData.directionalLightInvDirection);
+        
+        finalColor.xyz = float3(ndotl);
+        
+        outImage.write( finalColor, tid );
     }
 }
 
