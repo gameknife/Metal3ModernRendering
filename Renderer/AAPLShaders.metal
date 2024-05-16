@@ -95,6 +95,25 @@ constexpr sampler nearestSampler(address::repeat,
                                  mag_filter::nearest,
                                  mip_filter::none);
 
+
+// Polynomial approximation by Christophe Schlick
+float schlick(const float cosine, const float refractionIndex)
+{
+    float r0 = (1.0 - refractionIndex) / (1.0 + refractionIndex);
+    r0 *= r0;
+    return r0 + (1.0 - r0) * pow(1.0 - cosine, 5.0);
+}
+
+float3 scatterGBuffer( float3 direction, float3 surfNormal, float ior, float roughness, float3 albedo)
+{
+    const float dotVaule = dot(direction, surfNormal);
+    const float3 outwardNormal = dotVaule > 0 ? -surfNormal : surfNormal;
+    const float cosine = dotVaule > 0 ? ior * dotVaule : -dotVaule;
+    const float reflectProb = schlick(cosine, ior);
+        
+    return mix( albedo, float3(1,1,1), reflectProb);
+}
+
 inline float Fresnel(float dotProduct);
 inline float sqr(float a);
 float3 computeSpecular(LightingParameters parameters);
@@ -355,20 +374,20 @@ fragment float4 fragmentShader(
     }
     params.metalness += cameraData.metallicBias;
     float4 final_color = float4(skylight * float3((params.baseColor) * (1.0 - params.metalness)) + computeSpecular(params) + li * computeDiffuse(params), 1.0f) + float4(pSubmesh->emissionColor + params.reflectedColor, 1.0f);
-    //float4 final_color = float4((skylight + li * params.nDotl) * mix(params.baseColor.xyz, dot(params.baseColor.xyz, float3(.33)), 0.8), 1.0f);
-    //float4 final_color = float4(params.reflectedColor, 1.0);
-    //float4 gi = rtShadings.sample(colorSampler, screenTexcoord).xyzw;
-    //final_color = gi.x;
+
     return final_color;
 }
 
 
 
 fragment float4 irradianceShader(ColorInOut in [[stage_in]],
+                                 texture2d<float>            albedoBuffer         [[ texture(AAPLTextureIndexGBufferAlbedo)]],
                                  texture2d<float>            rtIrrandiance         [[ texture(AAPLTextureIndexIrrGI)]])
 {
     float2 screenTexcoord = calculateScreenCoord( in.currPosition );
-    float4 reflectedColor = rtIrrandiance.sample(linearSampler, screenTexcoord, level(0));
+    float4 reflectedColor = rtIrrandiance.sample(nearestSampler, screenTexcoord, level(0));
+    float4 albedoColor = albedoBuffer.sample(nearestSampler, screenTexcoord, level(0));
+    reflectedColor = reflectedColor * albedoColor;
     reflectedColor.a = 1.0;
     return reflectedColor;
 }
@@ -379,6 +398,7 @@ struct ThinGBufferOut
     float4 position [[color(0)]];
     float4 direction [[color(1)]];
     float2 motionVector [[color(2)]];
+    float4 albedo [[color(3)]];
 };
 
 fragment ThinGBufferOut gBufferFragmentShader(ColorInOut in [[stage_in]],
@@ -416,9 +436,14 @@ fragment ThinGBufferOut gBufferFragmentShader(ColorInOut in [[stage_in]],
         motionVector = (uv - prevUV);
     }
     
+    float3 eyeRay = normalize(in.worldPosition - cameraData.cameraPosition);
+    
     // Then the motion vector is simply the difference between the two
     out.direction = float4(length(in.viewPosition), normalize(in.normal));
     out.motionVector = motionVector;
+    // this should consider the schilick
+    
+    out.albedo.rgb = scatterGBuffer( eyeRay, in.normal, 1.45, params.roughness, params.baseColor.rgb);
     
     return out;
 }
@@ -790,18 +815,10 @@ kernel void rtBounce(
                     
                     if(screenTexcoord.x < 1.0 && screenTexcoord.y < 1.0)
                     {
-                        constexpr sampler colorSampler(mip_filter::linear,
-                                                       mag_filter::linear,
-                                                       min_filter::linear);
-                        
-                        constexpr sampler posSampler(mip_filter::nearest,
-                                                       mag_filter::nearest,
-                                                       min_filter::nearest);
-                        
-                        float3 targetpos = positions.sample(posSampler, screenTexcoord).xyz;
+                        float3 targetpos = positions.sample(nearestSampler, screenTexcoord).xyz;
                         if( distance(targetpos, worldPosition) < 0.1 )
                         {
-                            float3 specular = irradiance.sample(colorSampler, screenTexcoord).xyz * submesh.baseColor;
+                            float3 specular = irradiance.sample(linearSampler, screenTexcoord).xyz * submesh.baseColor;
                             finalColor.xyz += specular / (float)specularRayCount;
                         }
                     }
@@ -822,11 +839,43 @@ kernel void rtBounce(
     }
 }
 
+struct ScatterPayload
+{
+    float3 direction;
+    float3 color;
+    bool isEnded;
+};
+
+ScatterPayload scatter(float2 randomuv, float3 direction, float3 surfNormal, float ior, float roughness, float3 albedo)
+{
+    ScatterPayload payload;
+    const float dotVaule = dot(direction, surfNormal);
+    const float3 outwardNormal = dotVaule > 0 ? -surfNormal : surfNormal;
+    const float cosine = dotVaule > 0 ? ior * dotVaule : -dotVaule;
+    const float reflectProb = schlick(cosine, ior);
+        
+    if( randomuv.x > reflectProb )
+    {
+        payload.direction = alignWithNormal(sampleCosineWeightedHemisphere(randomuv), outwardNormal);
+        payload.isEnded = dotVaule > 0;
+        payload.color = albedo;
+    }
+    else
+    {
+        float3 reflected = reflect(direction, outwardNormal);
+        payload.direction = alignWithNormal(sampleCone(randomuv, cos(roughness * 45.f / 180.0f * M_PI_F)), reflected);
+        payload.isEnded = dotVaule > 0;
+        payload.color = float3(1.5,1.5,1.5);
+    }
+    
+    return payload;
+}
 
 kernel void rtGroundTruth(
              texture2d< float, access::write >      outImage                [[texture(OutImageIndex)]],
              texture2d< float >                     positions               [[texture(ThinGBufferPositionIndex)]],
              texture2d< float >                     directions              [[texture(ThinGBufferDirectionIndex)]],
+             texture2d< float >                     albedo                  [[texture(AAPLTextureIndexGBufferAlbedo)]],
              texture2d< float >                     skydomeMap              [[texture(AAPLSkyDomeTexture)]],
              constant AAPLInstanceTransform*        instanceTransforms      [[buffer(BufferIndexInstanceTransforms)]],
              constant AAPLCameraData&               cameraData              [[buffer(BufferIndexCameraData)]],
@@ -840,14 +889,11 @@ kernel void rtGroundTruth(
     uint h = outImage.get_height();
     if ( tid.x < w&& tid.y < h )
     {
-        float4 finalColor = float4( 0.0, 0.0, 0.0, 1.0 );
-        float3 lightColor = float3(20,20,20);
-        float3 color = float3(1,1,1);
+        float4 finalColor = float4(0,0,0,1);
 
         auto rawdata = positions.read(tid).xyzw;
         auto positionBase = rawdata.xyz;
-        float roughness = rawdata.w;
-        auto normalBase = directions.read(tid).yzw;
+        auto normalBase = normalize( directions.read(tid).yzw );
         
         Loki rng = Loki(tid.x + 1, tid.y + 1, cameraData.frameIndex);
         float random = rng.rand() * (w*h);
@@ -857,43 +903,56 @@ kernel void rtGroundTruth(
         uint counter = 0;
         for( uint s = 0; s < spp; s += 1  )
         {
+            float4 rayColor = float4( 1.0, 1.0, 1.0, 1.0 );
             // 构造一个在normal半球内的ray
-            uint bounceCount = 3;
+            uint bounceCount = 2;
 
             raytracing::intersector<raytracing::instancing, raytracing::triangle_data> inter;
             inter.assume_geometry_type( raytracing::geometry_type::triangle );
             
             raytracing::ray r;
-
-            // 这里需要构造一个基于法线的hemisphere来采样，并且引入重要性分布，使用hottonPattern
-            float3 traceNormal = normalBase;
-            r.origin = positionBase + traceNormal * rayGap;
-            float2 uv = float2( halton(cameraData.frameIndex + random, counter),
-                                halton(cameraData.frameIndex + random, counter+1));
-            counter += 2;
-            
-            float3 worldSpaceSampleDirection = sampleCosineWeightedHemisphere(uv);
-            worldSpaceSampleDirection = alignWithNormal(worldSpaceSampleDirection, traceNormal);
-            r.direction = worldSpaceSampleDirection;
             r.min_distance = 0;
             r.max_distance = FLT_MAX;
             
-            // 一种物理的ray启动方式
-            const float2 pixel = float2(tid.x + 0.0, h - tid.y + 0.0);
-            const float2 lensuv = (pixel / float2(w,h)) * 2.0 - 1.0;
-            
-            //float2 offset = Camera.Aperture/2 * RandomInUnitDisk(Ray.RandomSeed);
-            float2 offset = float2(0.0);
-            float4 origin = cameraData.invViewMatrix * float4(offset, 0, 1);
-            float4 target = cameraData.invProjectionMatrix * (float4(lensuv.x, lensuv.y, 1, 1));
-            float4 direction = cameraData.invViewMatrix * float4(normalize(target.xyz * 5.0 - float3(offset, 0)), 0);
-
-            r.origin = origin.xyz;
-            r.direction = direction.xyz;
-            
-            for( uint i = 0; i < bounceCount; ++i)
+            // primary hit from rasteraze result
+            if(true)
             {
-                // 在半球内发射射线
+                float3 eyeRay = normalize(positionBase - cameraData.cameraPosition);
+                float2 uv = float2( halton(cameraData.frameIndex + random, counter),
+                                    halton(cameraData.frameIndex + random, counter+1));
+                counter += 2;
+                
+                r.origin = positionBase + normalBase * rayGap;
+                ScatterPayload payload = scatter(uv, eyeRay, normalBase, 1.45f, rawdata.a, float3(1,1,1));
+                r.direction = payload.direction;
+            }
+            else
+            // all physical: ray from camera
+            {
+                const float2 pixel = float2(tid.x + 0.0, h - tid.y + 0.0);
+                const float2 lensuv = (pixel / float2(w,h)) * 2.0 - 1.0;
+                
+                //float2 offset = Camera.Aperture/2 * RandomInUnitDisk(Ray.RandomSeed);
+                float2 offset = float2(0.0);
+                float4 origin = cameraData.invViewMatrix * float4(offset, 0, 1);
+                float4 target = cameraData.invProjectionMatrix * (float4(lensuv.x, lensuv.y, 1, 1));
+                float4 direction = cameraData.invViewMatrix * float4(normalize(target.xyz * 5.0 - float3(offset, 0)), 0);
+
+                r.origin = origin.xyz;
+                r.direction = direction.xyz;
+            }
+            
+            
+            for( uint i = 0; i <= bounceCount; ++i)
+            {
+                // if reach the last bounce u still here, no hit light, exit
+                if(i == bounceCount)
+                {
+                    rayColor = float4(0,0,0,0);
+                    break;
+                }
+                
+                // trace loop
                 auto intersection = inter.intersect( r, accelerationStructure, 0xFF );
                 if ( intersection.type == raytracing::intersection_type::triangle )
                 {
@@ -934,109 +993,55 @@ kernel void rtGroundTruth(
                     n = normalize(normalMx * n);
 
                     // Texcoords
-
                     float2 tc0 = pMesh->generics[i0].texcoord.xy;
                     float2 tc1 = pMesh->generics[i1].texcoord.xy;
                     float2 tc2 = pMesh->generics[i2].texcoord.xy;
 
                     float2 texcoord = (tc0 * bary3.x) + (tc1 * bary3.y) + (tc2 * bary3.z);
 
-                    // World Position:
-
-                    packed_float3 wp0 = pMesh->positions[i0].xyz;
-                    packed_float3 wp1 = pMesh->positions[i1].xyz;
-                    packed_float3 wp2 = pMesh->positions[i2].xyz;
-
-                    packed_float3 worldPosition = (wp0 * bary3.x) + (wp1 * bary3.y) + (wp2 * bary3.z);
-
-                    // Prepare structures for shading:
-                    
-                    ColorInOut colorIn = {};
-                    colorIn.worldPosition = worldPosition;
-                    colorIn.normal = float3(n);
-                    colorIn.texCoord = texcoord;
-
                     texture2d< float > baseColorMap        = submesh.materials[AAPLTextureIndexBaseColor];        //colorMap
-                    texture2d< float > metallicMap         = submesh.materials[AAPLTextureIndexMetallic];      //metallicMap
-                    texture2d< float > roughnessMap        = submesh.materials[AAPLTextureIndexRoughness];        //roughnessMap
-
-                    // For shading, adjust the camera position and the world position to
-                    // correctly account for reflections in reflections (noticeable on the
-                    // sphere's reflection environment map). This is because to correctly
-                    // sample the environment map, the shader needs to take into account that
-                    // the ray starts from the thin G-Buffer, not from the camera.
-                    AAPLCameraData cd( cameraData );
-                    cd.cameraPosition = r.origin;
-                    colorIn.worldPosition = r.origin + r.direction * intersection.distance;
                     
-                    LightingParameters params = calculateParameters(colorIn,
-                                                                    cd,
-                                                                    lightData,
-                                                                    submesh.baseColor,
-                                                                    submesh.roughness,
-                                                                    submesh.metallic,
-                                                                    baseColorMap,
-                                                                    //normalMap,
-                                                                    metallicMap,
-                                                                    roughnessMap
-                                                                    //ambientOcclusionMap,
-                                                                    );
-                    
-                    // check if in shadow
-                    raytracing::ray rb;
-
-                    rb.origin = colorIn.worldPosition + colorIn.normal * rayGap;
-                    rb.direction = normalize(lightData.directionalLightInvDirection);
-                    rb.min_distance = 0;
-                    rb.max_distance = FLT_MAX;
-                    
-                    color *= params.baseColor.xyz;
-                    lightColor *= params.nDotl;
-                    // emission, with attenuion
-                    float mappedDist = intersection.distance;
-                    float atten = max(1.0, mappedDist * 1.0);
-                    float atten2 = atten * atten;
-                    
-                    auto intersectionb = inter.intersect( rb, accelerationStructure, 0xFF );
-                    if ( intersectionb.type == raytracing::intersection_type::none )
-                    {
-                        // if not in shadow, accumlate the direct light as bounce, consider light atten
-                        // should consider the light result
-                        finalColor.xyz += color * lightColor;//* ndotl_bounce;
-                    }
+                    float3 surfNormal = float3(n);
+                    float3 worldpos = r.origin + r.direction * intersection.distance + surfNormal * rayGap;
+                    float3 albedo = baseColorMap.sample(linearSampler, texcoord.xy * float2(1.f, -1.f) + float2(1.f,1.f)).rgb * submesh.baseColor;
                     
                     // if hit emitter, stop here and accumulate the light
-                    float ndotl_bounce = saturate( dot(traceNormal, r.direction) );
                     float lum = dot(submesh.emissionColor, float3(.33,.33,.33));
                     if(lum > 0.1)
                     {
-                        finalColor.xyz += color * submesh.emissionColor * ndotl_bounce / atten2;
+                        rayColor.xyz *= submesh.emissionColor.xyz;
                         break;
                     }
                     
-                    
-                    // recalc ray
-                    
-                    traceNormal = colorIn.normal;
-                    r.origin = rb.origin + traceNormal * rayGap;
+                    // scatter
                     float2 uv = float2( halton(cameraData.frameIndex + random, counter),
                                         halton(cameraData.frameIndex + random, counter+1));
                     counter += 2;
-                    float3 worldSpaceSampleDirection = sampleCosineWeightedHemisphere(uv);
-                    worldSpaceSampleDirection = alignWithNormal(worldSpaceSampleDirection, traceNormal);
-                    r.direction = worldSpaceSampleDirection;
+                    
+                    ScatterPayload payload = scatter(uv, r.direction, surfNormal, 1.45f, submesh.roughness, albedo);
+                    rayColor.xyz *= payload.color;
+                    
+                    if(payload.isEnded)
+                    {
+                        break;
+                    }
+                    
+                    // prepare next ray
+                    r.origin = worldpos;
+                    r.direction = payload.direction;
                 }
                 else if ( intersection.type == raytracing::intersection_type::none )
                 {
                     // 没打到, 取天光
-                    constexpr sampler linearFilterSampler(coord::normalized, address::clamp_to_edge, filter::linear);
-                    float3 c = equirectangularSample( r.direction, linearFilterSampler, skydomeMap ).rgb;
-                    finalColor.xyz += color * clamp( c, 0.0f, kMaxHDRValue );
-                    
+                    //constexpr sampler linearFilterSampler(coord::normalized, address::clamp_to_edge, filter::linear);
+                    //float3 c = equirectangularSample( r.direction, linearFilterSampler, skydomeMap ).rgb * 0.2;
+                    //finalColor.xyz += color * clamp( c, 0.0f, kMaxHDRValue );
+                    //rayColor.xyz = clamp( c, 0.0f, kMaxHDRValue );
+                    rayColor.xyz = float3(0.0);
                     break;
                 }
             }
-            
+            finalColor += rayColor;
         }
      
         outImage.write( finalColor / (float)spp, tid );

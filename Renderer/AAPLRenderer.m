@@ -60,6 +60,7 @@ typedef struct ThinGBuffer
     id<MTLTexture> depthNormalTexture;
     id<MTLTexture> PrevDepthNormalTexture;
     id<MTLTexture> motionVectorTexture;
+    id<MTLTexture> albedoTexture;
 } ThinGBuffer;
 
 @implementation AAPLRenderer
@@ -158,13 +159,14 @@ typedef struct ThinGBuffer
     MPSSVGF *svgf = [[MPSSVGF alloc] initWithDevice:_device];
     svgf.channelCount = 3;
     svgf.temporalWeighting = MPSTemporalWeightingExponentialMovingAverage;
-    svgf.temporalReprojectionBlendFactor = 0.1f;
+    svgf.temporalReprojectionBlendFactor = 0.04f;
+    svgf.minimumFramesForVarianceEstimation = 16;
     _denoiser = [[MPSSVGFDenoiser alloc] initWithSVGF:svgf textureAllocator:_textureAllocator];
-    _denoiser.bilateralFilterIterations = 2;
+    _denoiser.bilateralFilterIterations = 5;
     _denoiserIrr = [[MPSSVGFDenoiser alloc] initWithSVGF:svgf textureAllocator:_textureAllocator];
     _denoiserIrr.bilateralFilterIterations = 5;
     _denoiserRefl = [[MPSSVGFDenoiser alloc] initWithSVGF:svgf textureAllocator:_textureAllocator];
-    _denoiserRefl.bilateralFilterIterations = 2;
+    _denoiserRefl.bilateralFilterIterations = 5;
 
     // Create the temporal antialiasing object
     _TAA = [[MPSTemporalAA alloc] initWithDevice:_device];
@@ -274,7 +276,7 @@ typedef struct ThinGBuffer
     _thinGBuffer.positionTexture = [_device newTextureWithDescriptor:desc];
     _thinGBuffer.depthNormalTexture = [_textureAllocator textureWithPixelFormat:MTLPixelFormatRGBA16Float width:_size.width height:_size.height];
     _thinGBuffer.motionVectorTexture = [_textureAllocator textureWithPixelFormat:MTLPixelFormatRG16Float width:_size.width height:_size.height];
-    
+    _thinGBuffer.albedoTexture = [_textureAllocator textureWithPixelFormat:MTLPixelFormatBGRA8Unorm_sRGB width:_size.width height:_size.height];
     MTLHeapDescriptor* hd = [[MTLHeapDescriptor alloc] init];
     hd.size = size.width * size.height * 4 * 2 * 3;
     hd.storageMode = MTLStorageModePrivate;
@@ -387,6 +389,7 @@ typedef struct ThinGBuffer
             pipelineStateDescriptor.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float;
             pipelineStateDescriptor.colorAttachments[1].pixelFormat = MTLPixelFormatRGBA16Float;
             pipelineStateDescriptor.colorAttachments[2].pixelFormat = MTLPixelFormatRG16Float;
+            pipelineStateDescriptor.colorAttachments[3].pixelFormat = MTLPixelFormatBGRA8Unorm_sRGB;
 
             _gbufferPipelineState = [_device newRenderPipelineStateWithDescriptor:pipelineStateDescriptor error:&error];
             NSAssert(_gbufferPipelineState, @"Failed to create GBuffer pipeline state: %@", error);
@@ -402,6 +405,7 @@ typedef struct ThinGBuffer
             pipelineStateDescriptor.colorAttachments[0].pixelFormat = MTLPixelFormatRG11B10Float;
             pipelineStateDescriptor.colorAttachments[1].pixelFormat = MTLPixelFormatInvalid;
             pipelineStateDescriptor.colorAttachments[2].pixelFormat = MTLPixelFormatInvalid;
+            pipelineStateDescriptor.colorAttachments[3].pixelFormat = MTLPixelFormatInvalid;
 
              _skyboxPipelineState = [_device newRenderPipelineStateWithDescriptor:pipelineStateDescriptor error:&error];
             NSAssert(_skyboxPipelineState, @"Failed to create Skybox Render Pipeline State: %@", error );
@@ -1217,6 +1221,11 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
             gbufferPass.colorAttachments[2].storeAction = MTLStoreActionStore;
             gbufferPass.colorAttachments[2].texture = _thinGBuffer.motionVectorTexture;
             
+            gbufferPass.colorAttachments[3].loadAction = MTLLoadActionClear;
+            gbufferPass.colorAttachments[3].clearColor = MTLClearColorMake(0, 0, 0, 0);
+            gbufferPass.colorAttachments[3].storeAction = MTLStoreActionStore;
+            gbufferPass.colorAttachments[3].texture = _thinGBuffer.albedoTexture;
+            
             // swap
             _thinGBuffer.PrevDepthNormalTexture = _thinGBuffer.depthNormalTexture;
             _thinGBuffer.depthNormalTexture = depthNormalTexture;
@@ -1367,6 +1376,7 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
         if( _renderMode == RMReflectionsOnly )
         {
             [renderEncoder setFragmentTexture:denoisedIrr atIndex:AAPLTextureIndexIrrGI];
+            [renderEncoder setFragmentTexture:_thinGBuffer.albedoTexture atIndex:AAPLTextureIndexGBufferAlbedo];
         }
         
         [renderEncoder setFragmentTexture:_skyMap atIndex:AAPLSkyDomeTexture];
@@ -1440,11 +1450,11 @@ matrix_float4x4 calculateTransform( ModelInstance instance )
             [renderEncoder pushDebugGroup:@"后处理曝光"];
             [renderEncoder setRenderPipelineState:_postMergePipeline];
             [renderEncoder setFragmentBytes:&_exposure length:sizeof(float) atIndex:0];
-            if(_renderMode == RMReflectionsOnly)
-            {
-                [renderEncoder setFragmentTexture:denoisedIrr atIndex:0];
-            }
-            else
+//            if(_renderMode == RMReflectionsOnly)
+//            {
+//                [renderEncoder setFragmentTexture:_rtGroundTruthMap atIndex:0];
+//            }
+//            else
             {
                 [renderEncoder setFragmentTexture:_rawColorMap atIndex:0];
             }
